@@ -273,3 +273,17 @@ finalized:
    - The single building-wide 4-digit user code (`I-6`), reset-on-success lockout behavior (`I-19`), and shared `*`-prefix
      keypad lockout counter (`I-44`) are intentionally retained to preserve the exact end-user behavior specified in
      [kullanim-kilavuzu.md](kullanim-kilavuzu.md).
+7. **`I-15` — No Panel Backup / Restore (Accepted Product Scope):**
+   - The panel holds the only copy of the pairing database (apartment registrations and per-module keys). No backup,
+     export, or restore mechanism will be implemented. If the panel is replaced or its NVS is lost, every apartment
+     module must be reset and re-paired.
+8. **`I-28`, `I-54`, `I-59`, `I-60` — Out of Project Scope:**
+   - **`I-28` Building Wi-Fi credential rotation:** No credential-push mechanism. If the building AP SSID/passphrase
+     changes, either keep the old SSID/passphrase on the new AP or reset and re-pair every module
+     ([kullanim-kilavuzu.md](kullanim-kilavuzu.md) §4.2).
+   - **`I-54` Event log / time source:** No persistent audit log and no real-time clock or SNTP; events are reported
+     only on the panel serial monitor.
+   - **`I-59` Visitor UX / accessibility:** No audible feedback (no buzzer hardware), no ring rate limiting, and no
+     do-not-disturb mode on apartment modules.
+   - **`I-60` Regulatory compliance:** CRA, RED Delegated Act / EN 18031, ETSI EN 303 645 and related radio/EMC/safety
+     assessments are outside the scope of this project.

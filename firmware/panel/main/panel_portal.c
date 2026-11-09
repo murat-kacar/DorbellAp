@@ -16,6 +16,32 @@ static volatile int64_t s_portal_deadline_us = 0;
 static volatile bool s_portal_close_pending = false;
 static volatile bool s_portal_testing = false;
 static volatile bool s_portal_abort = false;
+/* True while the STA driver holds submitted-but-uncommitted credentials; panel_portal_stop() then restores the
+ * committed ones from g_panel_cfg so an aborted test never leaves the panel chasing an untested network. */
+static volatile bool s_sta_cfg_untested = false;
+
+/**
+ * @brief Take g_panel_mutex from an httpd handler without risking a deadlock.
+ *
+ * panel_portal_stop() runs with g_panel_mutex held and calls httpd_stop(), which waits with no timeout for the httpd
+ * task to finish its current handler. A handler blocked on the mutex would therefore deadlock the worker (and trip
+ * the TWDT). Poll instead and give up once the portal is being stopped.
+ *
+ * @return true if the mutex was taken, false if the portal is shutting down (mutex NOT taken).
+ */
+static bool portal_take_mutex_or_abort(void)
+{
+    while (xSemaphoreTake(g_panel_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        if (s_portal_abort) {
+            return false;
+        }
+    }
+    if (s_portal_abort) {
+        xSemaphoreGive(g_panel_mutex);
+        return false;
+    }
+    return true;
+}
 
 static bool is_request_on_softap_interface(httpd_req_t *req)
 {
@@ -112,7 +138,9 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
     }
 
     char current_ssid_esc[192] = {0};
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    if (!portal_take_mutex_or_abort()) {
+        return ESP_FAIL;
+    }
     html_escape(g_panel_cfg.wifi_ssid, current_ssid_esc, sizeof(current_ssid_esc));
     xSemaphoreGive(g_panel_mutex);
 
@@ -191,6 +219,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Testing submitted Wi-Fi credentials for SSID '%s' (15 s timeout)", new_ssid);
     s_portal_testing = true;
     s_portal_deadline_us = esp_timer_get_time() + 30000000LL;
+    s_sta_cfg_untested = true;
     doorbell_net_set_sta_reconnect_paused(false);
     doorbell_net_connect_sta(new_ssid, new_pass);
 
@@ -204,18 +233,26 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
     s_portal_testing = false;
     if (s_portal_abort || g_panel_mode != MODE_PORTAL) {
+        /* Portal is being stopped: panel_portal_stop() restores the committed credentials (s_sta_cfg_untested) */
         memset(new_pass, 0, sizeof(new_pass));
         return ESP_FAIL;
     }
     if (wait_err == ESP_OK) {
         /* Connection succeeded: commit new credentials to NVS and close portal */
-        xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+        if (!portal_take_mutex_or_abort()) {
+            memset(new_pass, 0, sizeof(new_pass));
+            return ESP_FAIL;
+        }
         memset(g_panel_cfg.wifi_ssid, 0, sizeof(g_panel_cfg.wifi_ssid));
         memset(g_panel_cfg.wifi_pass, 0, sizeof(g_panel_cfg.wifi_pass));
         strncpy(g_panel_cfg.wifi_ssid, new_ssid, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, new_pass, sizeof(g_panel_cfg.wifi_pass) - 1);
-        doorbell_storage_panel_save_cfg(&g_panel_cfg);
+        esp_err_t save_err = doorbell_storage_panel_save_cfg(&g_panel_cfg);
+        s_sta_cfg_untested = false;
         xSemaphoreGive(g_panel_mutex);
+        if (save_err != ESP_OK) {
+            ESP_LOGE(TAG, "Connected with new Wi-Fi credentials but NVS save failed: %s", esp_err_to_name(save_err));
+        }
         memset(new_pass, 0, sizeof(new_pass));
 
         doorbell_led_panel_start(LED_PANEL_RESULT_OK);
@@ -235,12 +272,15 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     ESP_LOGW(TAG, "Test association to '%s' failed — rolling back to previous Wi-Fi credentials", new_ssid);
 
     doorbell_net_set_sta_reconnect_paused(true);
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    if (!portal_take_mutex_or_abort()) {
+        return ESP_FAIL;
+    }
     if (g_panel_cfg.wifi_ssid[0] != '\0') {
         doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);
     } else {
         doorbell_net_disconnect_sta();
     }
+    s_sta_cfg_untested = false;
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
     xSemaphoreGive(g_panel_mutex);
 
@@ -300,6 +340,7 @@ esp_err_t panel_portal_start(void)
     s_portal_close_pending = false;
     s_portal_testing = false;
     s_portal_abort = false;
+    s_sta_cfg_untested = false;
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
 
     /* 2 s solid confirmation followed by 1 Hz slow blink while portal is open (I-40, §7.1) */
@@ -320,6 +361,20 @@ void panel_portal_stop(void)
     doorbell_led_panel_stop(LED_PANEL_PORTAL);
     doorbell_net_stop_softap();
     doorbell_net_set_sta_reconnect_paused(false);
+
+    /* httpd_stop() has returned, so no handler is running. If a credential test was interrupted, the STA driver still
+     * holds the submitted (uncommitted) network: switch back to the committed credentials. Callers hold
+     * g_panel_mutex, so g_panel_cfg is safe to read here. */
+    if (s_sta_cfg_untested) {
+        s_sta_cfg_untested = false;
+        ESP_LOGW(TAG, "Credential test interrupted — restoring committed Wi-Fi credentials");
+        if (g_panel_cfg.wifi_ssid[0] != '\0') {
+            doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);
+        } else {
+            doorbell_net_disconnect_sta();
+        }
+    }
+
     s_portal_deadline_us = 0;
     s_portal_close_pending = false;
     s_portal_testing = false;

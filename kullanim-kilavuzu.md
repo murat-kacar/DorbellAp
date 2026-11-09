@@ -189,6 +189,17 @@ başlar. **Bütün daire modülleri sıfırlanıp yeniden eşleştirilmelidir.**
   GND arasına gizli bir buton da bağlanabilir (ESP32'de EN butonu ve elektrik kesintisi raporda `POWERON` olarak
   görünür). Kayıtlar, şifreler, kilit durumu, Wi-Fi ayarları ve eşleştirme bilgileri korunur.
 
+### 6.5. Panelin değiştirilmesi
+Daire kayıtları ve şifreleme anahtarları yalnızca panelde saklanır; bu bilgilerin yedeği alınamaz. Panel arızalanıp
+yenisiyle değiştirilirse (veya panelin hafızası silinirse):
+
+1. Yeni panelde bina Wi-Fi ağını ayarlayın (bölüm 4.2) ve fabrika şifrelerini değiştirin (bölüm 4).
+2. **Bütün daire modüllerini** sıfırlayın (bölüm 6.2).
+3. Her modülü yeni panelle yeniden eşleştirin (bölüm 5).
+
+Eski panele eşleştirilmiş modüller yeni panelle çalışmaz; panelden cevap alamadıkları için yaklaşık 15 dakika içinde
+seyrek tek flaş yapmaya başlarlar ve sıfırlanıp yeniden eşleştirilene kadar böyle kalırlar.
+
 ---
 
 ## 7. LED durumları
