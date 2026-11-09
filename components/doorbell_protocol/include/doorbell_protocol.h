@@ -169,6 +169,9 @@ typedef struct {
     uint8_t src_id;
     uint32_t tx_counter;
     uint16_t seq_id;
+    /* CCM tag of the request that produced this ACK. A duplicate must carry the same tag, so a forged cleartext
+     * header with a guessed (tx_counter, seq_id) cannot make the receiver reflect the cached ACK. */
+    uint8_t req_tag[DOORBELL_TAG_SIZE];
     size_t frame_len;
     uint8_t frame[DOORBELL_MAX_FRAME_SIZE];
 } doorbell_dedup_cache_t;

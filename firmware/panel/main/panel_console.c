@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_console.h"
+#include "linenoise/linenoise.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -43,6 +44,9 @@ static int cmd_doorbell_status(int argc, char **argv)
     printf("AP Channel/RSSI  : ch %u, %d dBm (disconnects=%u)\n",
            (unsigned)ch, (int)rssi, (unsigned)disconn);
     printf("Registered Apts  : %lu\n", (unsigned long)reg_count);
+    printf("Last Restart     : %s (%u)\n",
+           doorbell_reset_reason_str((uint8_t)esp_reset_reason()),
+           (unsigned)esp_reset_reason());
     printf("Uptime           : %lld s\n", (long long)(esp_timer_get_time() / 1000000LL));
     printf("Free Heap        : %lu B (min %lu B)\n",
            (unsigned long)esp_get_free_heap_size(),
@@ -57,6 +61,10 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         return 1;
     }
 
+    /* The REPL adds every line to the in-RAM history before running it; this line contains the admin code and the
+     * building passphrase, so drop the whole history immediately (I-25) */
+    linenoiseHistoryFree();
+
     const char *admin_candidate = argv[1];
     const char *new_ssid = argv[2];
     const char *new_pass = (argc >= 4) ? argv[3] : "";
@@ -67,7 +75,8 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         return 1;
     }
 
-    if (strlen(new_ssid) == 0 || strlen(new_ssid) > 32 || strlen(new_pass) > 64) {
+    size_t pass_len = strlen(new_pass);
+    if (strlen(new_ssid) == 0 || strlen(new_ssid) > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
         printf("Error: invalid SSID or passphrase length.\n");
         return 1;
     }

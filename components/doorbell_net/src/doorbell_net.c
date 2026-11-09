@@ -13,6 +13,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "esp_random.h"
 #include "esp_mac.h"
 #include "esp_log.h"
@@ -218,8 +219,18 @@ esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass)
     if (s_reconnect_timer) {
         esp_timer_stop(s_reconnect_timer);
     }
+
+    /* Drop the old association state synchronously. The WIFI_EVENT_STA_DISCONNECTED event for the old link arrives
+     * asynchronously, so without this doorbell_net_wait_for_sta_ip() would report the OLD connection as success and
+     * the portal would commit untested credentials (I-40). */
+    bool was_connected = s_sta_connected;
+    s_sta_connected = false;
+    s_sta_ipv4_host = 0;
     if (s_net_evt) {
         xEventGroupClearBits(s_net_evt, NET_BIT_CONNECTED | NET_BIT_FAIL);
+    }
+    if (was_connected && s_state_cb) {
+        s_state_cb(false, 0, s_state_cb_ctx);
     }
 
     esp_wifi_disconnect();
@@ -428,7 +439,13 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
 
+    if (esp_task_wdt_status(NULL) == ESP_OK) {
+        esp_task_wdt_reset();
+    }
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (esp_task_wdt_status(NULL) == ESP_OK) {
+        esp_task_wdt_reset();
+    }
     if (err != ESP_OK) {
         doorbell_net_set_sta_reconnect_paused(false);
         return err;
@@ -468,18 +485,29 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
     strncpy(out_ssid, (const char *)ap_records[found_idx].ssid, 32);
     out_ssid[32] = '\0';
 
-    ESP_ERROR_CHECK(doorbell_net_connect_sta(out_ssid, ""));
+    err = doorbell_net_connect_sta(out_ssid, "");
+    if (err != ESP_OK) {
+        doorbell_net_set_sta_reconnect_paused(false);
+        return err;
+    }
     doorbell_net_set_sta_reconnect_paused(false);
 
-    EventBits_t bits = xEventGroupWaitBits(s_net_evt,
-                                           NET_BIT_CONNECTED,
-                                           pdFALSE,
-                                           pdFALSE,
-                                           pdMS_TO_TICKS(timeout_ms));
-    if (!(bits & NET_BIT_CONNECTED)) {
-        return ESP_ERR_TIMEOUT;
+    /* Wait in 250 ms bounded slices so TWDT-subscribed callers never block past the 5 s watchdog timeout (I-46) */
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
+    while (esp_timer_get_time() < deadline_us) {
+        if (esp_task_wdt_status(NULL) == ESP_OK) {
+            esp_task_wdt_reset();
+        }
+        EventBits_t bits = xEventGroupWaitBits(s_net_evt,
+                                               NET_BIT_CONNECTED,
+                                               pdFALSE,
+                                               pdFALSE,
+                                               pdMS_TO_TICKS(250));
+        if (bits & NET_BIT_CONNECTED) {
+            return ESP_OK;
+        }
     }
-    return ESP_OK;
+    return ESP_ERR_TIMEOUT;
 }
 
 int doorbell_udp_socket_create(uint16_t port, uint32_t bind_ipv4_host, uint32_t rcvtimeo_ms)

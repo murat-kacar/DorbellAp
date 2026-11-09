@@ -55,6 +55,11 @@ void doorbell_relay_force_off(doorbell_relay_t *relay);
  */
 void doorbell_relay_safety_check(doorbell_relay_t *relay);
 
+/**
+ * @brief Return a human-readable English description of an esp_reset_reason_t code (I-58, I-68).
+ */
+const char *doorbell_reset_reason_str(uint8_t reason);
+
 #ifdef __cplusplus
 }
 #endif

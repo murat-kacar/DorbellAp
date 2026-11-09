@@ -46,6 +46,8 @@ _Static_assert(CONFIG_DOORBELL_PANEL_LOCKOUT_FIRST_S <= CONFIG_DOORBELL_PANEL_LO
                "First lockout duration must be <= maximum lockout duration");
 _Static_assert(CONFIG_DOORBELL_PANEL_RESET_MIN_HOLD_S < CONFIG_DOORBELL_PANEL_RESET_MAX_HOLD_S,
                "Reset button minimum hold must be strictly less than maximum hold");
+_Static_assert(CONFIG_DOORBELL_PANEL_RESET_MAX_HOLD_S <= 65,
+               "Panel reset button maximum hold must fit within uint16_t ms (<= 65 s)");
 _Static_assert(sizeof(CONFIG_DOORBELL_PANEL_KEY_MAP) - 1 == 12,
                "Keypad key map must be exactly 12 characters");
 _Static_assert(GPIO_IS_VALID_OUTPUT_GPIO(CONFIG_DOORBELL_PANEL_GPIO_DOOR_RELAY),

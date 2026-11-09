@@ -263,7 +263,7 @@ menu "Doorbell System Configuration"
 
             config DOORBELL_PANEL_RESET_MAX_HOLD_S
                 int "Maximum hold (s)"
-                range 15 120
+                range 15 65
                 default 60
 
         endmenu

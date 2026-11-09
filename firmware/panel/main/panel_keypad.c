@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "freertos/queue.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "mbedtls/constant_time.h"
@@ -13,9 +14,17 @@ static const char *TAG = "panel_keypad";
 
 #define KEYPAD_BUF_MAX 48
 
+#define KEY_QUEUE_DEPTH 32
+
 static char s_key_buf[KEYPAD_BUF_MAX];
 static size_t s_key_len = 0;
 static esp_timer_handle_t s_input_timeout_timer = NULL;
+/* Button callbacks run in the esp_timer task. They only enqueue keys / set flags; all parsing, mutex waits and NVS
+ * writes happen in panel_worker_task via panel_keypad_process() so the esp_timer task (which also drives the door
+ * relay de-energize timer) is never blocked. */
+static QueueHandle_t s_key_queue = NULL;
+static volatile bool s_input_timeout_pending = false;
+static volatile bool s_key_overflow_pending = false;
 static volatile int64_t s_lockout_deadline_us = 0;
 static uint32_t s_lockout_persist_divider = 0;
 
@@ -32,9 +41,7 @@ static void clear_keypad_buffer(void)
 static void input_timeout_cb(void *arg)
 {
     (void)arg;
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
-    clear_keypad_buffer();
-    xSemaphoreGive(g_panel_mutex);
+    s_input_timeout_pending = true;
 }
 
 bool panel_is_locked_out(void)
@@ -425,9 +432,15 @@ static void matrix_key_down_cb(void *button_handle, void *usr_data)
 
     doorbell_led_panel_start(LED_PANEL_KEY_PRESS);
 
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    if (!s_key_queue || xQueueSend(s_key_queue, &ch, 0) != pdTRUE) {
+        s_key_overflow_pending = true;
+    }
+}
+
+/* Handles one key in panel_worker_task context (mutex held by caller) */
+static void process_key_locked(char ch)
+{
     if (g_panel_mode == MODE_RESETTING) {
-        xSemaphoreGive(g_panel_mutex);
         return;
     }
 
@@ -454,7 +467,38 @@ static void matrix_key_down_cb(void *button_handle, void *usr_data)
             doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         }
     }
-    xSemaphoreGive(g_panel_mutex);
+}
+
+void panel_keypad_process(void)
+{
+    if (!s_key_queue) {
+        return;
+    }
+
+    if (s_input_timeout_pending) {
+        s_input_timeout_pending = false;
+        xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+        clear_keypad_buffer();
+        xSemaphoreGive(g_panel_mutex);
+    }
+
+    if (s_key_overflow_pending) {
+        /* Keys were dropped: the buffered sequence is no longer what the user typed, so discard it */
+        s_key_overflow_pending = false;
+        xQueueReset(s_key_queue);
+        xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+        clear_keypad_buffer();
+        xSemaphoreGive(g_panel_mutex);
+        doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+        return;
+    }
+
+    char ch;
+    while (xQueueReceive(s_key_queue, &ch, 0) == pdTRUE) {
+        xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+        process_key_locked(ch);
+        xSemaphoreGive(g_panel_mutex);
+    }
 }
 
 /* ---- Hidden Code-Reset Button on Panel (GPIO 19, 10-60 s window) ---- */
@@ -463,12 +507,11 @@ static void panel_reset_btn_down_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
     if (g_panel_mode == MODE_PORTAL) {
-        /* Pressing hidden reset button while portal is open closes portal immediately (docs/protocol.md §5.1) */
+        /* Pressing hidden reset button while portal is open closes portal immediately (docs/protocol.md §5.1).
+         * Only a flag is set here; the worker task performs the shutdown. */
         panel_action_cancel_active_mode();
     }
-    xSemaphoreGive(g_panel_mutex);
 }
 
 static void panel_reset_btn_min_hold_cb(void *button_handle, void *usr_data)
@@ -508,6 +551,11 @@ esp_err_t panel_keypad_init(void)
         doorbell_led_panel_start(LED_PANEL_LOCKOUT);
         ESP_LOGW(TAG, "Restored active keypad lockout (%lu s remaining)",
                  (unsigned long)g_panel_cfg.lockout_remaining_s);
+    }
+
+    s_key_queue = xQueueCreate(KEY_QUEUE_DEPTH, sizeof(char));
+    if (!s_key_queue) {
+        return ESP_ERR_NO_MEM;
     }
 
     const esp_timer_create_args_t t_args = {

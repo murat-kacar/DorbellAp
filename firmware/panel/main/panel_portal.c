@@ -14,6 +14,8 @@ static httpd_handle_t s_httpd = NULL;
 static uint32_t s_portal_ap_ipv4_host = 0;
 static volatile int64_t s_portal_deadline_us = 0;
 static volatile bool s_portal_close_pending = false;
+static volatile bool s_portal_testing = false;
+static volatile bool s_portal_abort = false;
 
 static bool is_request_on_softap_interface(httpd_req_t *req)
 {
@@ -115,7 +117,7 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
     xSemaphoreGive(g_panel_mutex);
 
     /* Never echo stored passphrase in HTML (I-47) */
-    char page[1280];
+    char page[1600];
     snprintf(page, sizeof(page),
              "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
              "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -129,7 +131,9 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
              "<label>Bina Wi-Fi Adı (SSID):</label>"
              "<input type=\"text\" name=\"ssid\" maxlength=\"32\" value=\"%s\" required>"
              "<label>Bina Wi-Fi Şifresi (WPA2/WPA3):</label>"
-             "<input type=\"password\" name=\"password\" maxlength=\"64\" placeholder=\"Yeni şifreyi girin\">"
+             "<input type=\"password\" name=\"password\" maxlength=\"63\" placeholder=\"Yeni şifreyi girin\">"
+             "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
+             "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, 1 sn hızlı yanıp sönme = başarısız.</p>"
              "<button type=\"submit\">Kaydet ve Bağlan</button>"
              "</form></body></html>",
              current_ssid_esc);
@@ -162,29 +166,47 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
     body[received] = '\0';
 
-    char new_ssid[33] = {0};
-    char new_pass[65] = {0};
+    /* Decode into oversized buffers so over-long input is detected instead of silently truncated */
+    char new_ssid[48] = {0};
+    char new_pass[80] = {0};
     extract_form_field(body, "ssid", new_ssid, sizeof(new_ssid));
     extract_form_field(body, "password", new_pass, sizeof(new_pass));
     memset(body, 0, sizeof(body));
 
-    if (new_ssid[0] == '\0') {
+    /* SSID: 1..32 bytes. Passphrase: empty (open AP) or 8..63 characters (IEEE 802.11i WPA2/WPA3 passphrase) */
+    size_t ssid_len = strlen(new_ssid);
+    size_t pass_len = strlen(new_pass);
+    if (ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+        memset(new_pass, 0, sizeof(new_pass));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
         httpd_resp_sendstr(req,
             "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\"></head>"
-            "<body><h3>Hata: Wi-Fi adı (SSID) boş bırakılamaz.</h3>"
+            "<body><h3>Hata: Wi-Fi adı 1-32 karakter, şifre ise 8-63 karakter olmalıdır.</h3>"
             "<p><a href=\"/\">Geri dön</a></p></body></html>");
-        memset(new_pass, 0, sizeof(new_pass));
         return ESP_OK;
     }
 
     /* Test-Before-Commit (I-40): attempt STA connection for up to 15 seconds while keeping SoftAP open */
     ESP_LOGI(TAG, "Testing submitted Wi-Fi credentials for SSID '%s' (15 s timeout)", new_ssid);
+    s_portal_testing = true;
+    s_portal_deadline_us = esp_timer_get_time() + 30000000LL;
     doorbell_net_set_sta_reconnect_paused(false);
     doorbell_net_connect_sta(new_ssid, new_pass);
 
-    esp_err_t wait_err = doorbell_net_wait_for_sta_ip(15000);
+    esp_err_t wait_err = ESP_ERR_TIMEOUT;
+    int64_t test_deadline_us = esp_timer_get_time() + 15000000LL;
+    while (!s_portal_abort && g_panel_mode == MODE_PORTAL && esp_timer_get_time() < test_deadline_us) {
+        if (doorbell_net_wait_for_sta_ip(250) == ESP_OK) {
+            wait_err = ESP_OK;
+            break;
+        }
+    }
+    s_portal_testing = false;
+    if (s_portal_abort || g_panel_mode != MODE_PORTAL) {
+        memset(new_pass, 0, sizeof(new_pass));
+        return ESP_FAIL;
+    }
     if (wait_err == ESP_OK) {
         /* Connection succeeded: commit new credentials to NVS and close portal */
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
@@ -276,6 +298,8 @@ esp_err_t panel_portal_start(void)
 
     g_panel_mode = MODE_PORTAL;
     s_portal_close_pending = false;
+    s_portal_testing = false;
+    s_portal_abort = false;
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
 
     /* 2 s solid confirmation followed by 1 Hz slow blink while portal is open (I-40, §7.1) */
@@ -288,6 +312,7 @@ esp_err_t panel_portal_start(void)
 
 void panel_portal_stop(void)
 {
+    s_portal_abort = true;
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
@@ -297,6 +322,7 @@ void panel_portal_stop(void)
     doorbell_net_set_sta_reconnect_paused(false);
     s_portal_deadline_us = 0;
     s_portal_close_pending = false;
+    s_portal_testing = false;
     if (g_panel_mode == MODE_PORTAL) {
         g_panel_mode = MODE_IDLE;
     }
@@ -305,7 +331,7 @@ void panel_portal_stop(void)
 
 void panel_portal_tick(void)
 {
-    if (g_panel_mode != MODE_PORTAL) {
+    if (g_panel_mode != MODE_PORTAL || s_portal_testing) {
         return;
     }
     if (s_portal_close_pending || (s_portal_deadline_us > 0 && esp_timer_get_time() >= s_portal_deadline_us)) {

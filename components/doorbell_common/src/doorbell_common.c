@@ -1,16 +1,25 @@
 #include "doorbell_config_checks.h"
 #include "doorbell_relay.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h"
 #include "esp_log.h"
 
 static const char *TAG = "doorbell_relay";
+
+/* Guards the is_active test-and-set: relays are triggered from more than one task (worker, esp_timer) */
+static portMUX_TYPE s_relay_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void relay_timer_cb(void *arg)
 {
     doorbell_relay_t *relay = (doorbell_relay_t *)arg;
     gpio_set_level(relay->gpio_num, relay->inactive_level);
+    taskENTER_CRITICAL(&s_relay_lock);
+    bool was_active = relay->is_active;
     relay->is_active = false;
     relay->deadline_us = 0;
-    if (relay->on_deenergize) {
+    taskEXIT_CRITICAL(&s_relay_lock);
+    if (was_active && relay->on_deenergize) {
         relay->on_deenergize(relay->cb_ctx);
     }
 }
@@ -66,21 +75,22 @@ esp_err_t doorbell_relay_trigger(doorbell_relay_t *relay, bool *already_active_o
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (relay->is_active) {
-        if (already_active_out) {
-            *already_active_out = true;
-        }
-        return ESP_OK;
+    uint64_t duration_us = (uint64_t)relay->pulse_ms * 1000ULL;
+
+    taskENTER_CRITICAL(&s_relay_lock);
+    bool was_active = relay->is_active;
+    if (!was_active) {
+        relay->is_active = true;
+        relay->deadline_us = esp_timer_get_time() + (int64_t)duration_us;
     }
+    taskEXIT_CRITICAL(&s_relay_lock);
 
     if (already_active_out) {
-        *already_active_out = false;
+        *already_active_out = was_active;
     }
-
-    int64_t now_us = esp_timer_get_time();
-    uint64_t duration_us = (uint64_t)relay->pulse_ms * 1000ULL;
-    relay->deadline_us = now_us + (int64_t)duration_us;
-    relay->is_active = true;
+    if (was_active) {
+        return ESP_OK;
+    }
 
     gpio_set_level(relay->gpio_num, relay->active_level);
 
@@ -103,9 +113,11 @@ void doorbell_relay_force_off(doorbell_relay_t *relay)
     }
     esp_timer_stop(relay->timer);
     gpio_set_level(relay->gpio_num, relay->inactive_level);
+    taskENTER_CRITICAL(&s_relay_lock);
     bool was_active = relay->is_active;
     relay->is_active = false;
     relay->deadline_us = 0;
+    taskEXIT_CRITICAL(&s_relay_lock);
     if (was_active && relay->on_deenergize) {
         relay->on_deenergize(relay->cb_ctx);
     }
@@ -121,6 +133,23 @@ void doorbell_relay_safety_check(doorbell_relay_t *relay)
     if (relay->deadline_us > 0 && now_us > (relay->deadline_us + 100000LL)) {
         ESP_LOGW(TAG, "Safety clamp forced relay off on GPIO %d", relay->gpio_num);
         doorbell_relay_force_off(relay);
+    }
+}
+
+const char *doorbell_reset_reason_str(uint8_t reason)
+{
+    switch ((esp_reset_reason_t)reason) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "external pin";
+        case ESP_RST_SW:        return "software restart";
+        case ESP_RST_PANIC:     return "software panic";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "other watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep sleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
     }
 }
 

@@ -60,6 +60,8 @@ void panel_action_reset_codes_to_factory(void);
 
 /* Lockout & Credential Verification (panel_keypad.c) */
 esp_err_t panel_keypad_init(void);
+/* Drains queued key presses; must be called from panel_worker_task (never from a button/esp_timer callback) */
+void panel_keypad_process(void);
 void panel_lockout_tick_1s(void);
 bool panel_is_locked_out(void);
 bool panel_verify_admin_code_ct(const char *candidate);

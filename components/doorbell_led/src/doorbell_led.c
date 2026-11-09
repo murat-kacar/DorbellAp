@@ -203,6 +203,7 @@ static const blink_step_t s_unit_reset_hold[] = {
 
 static const blink_step_t s_unit_result_ok[] = {
     {LED_BLINK_HOLD, BRIGHTNESS_FULL, CONFIG_DOORBELL_LED_OK_DURATION_MS},
+    {LED_BLINK_HOLD, LED_STATE_OFF, 0},
     {LED_BLINK_STOP, 0, 0},
 };
 

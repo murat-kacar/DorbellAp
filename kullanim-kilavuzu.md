@@ -110,6 +110,10 @@ derlemeden panelde değiştirmek için:
    - **Bağlantı başarılı olursa:** Yeni ayarlar kaydedilir, panel LED'i 2 saniye sabit yanar ve kurulum ağı kapanır.
    - **Bağlantı başarısız olursa (ör. şifre yanlışsa):** Eski ayarlar korunur, web sayfasında hata gösterilir ve panel
      LED'i 1 saniye hızlı yanıp söner.
+   - Bina erişim noktası farklı bir Wi-Fi kanalındaysa, panel bağlanmayı denerken telefonunuzun `Doorbell-Setup`
+     bağlantısı kısa süre kopabilir ve sonuç sayfası görünmeyebilir. Bu durumda sonucu **panel LED'inden** takip edin
+     (2 saniye sabit = başarılı, 1 saniye hızlı yanıp sönme = başarısız). Başarısız olduysa ağa yeniden bağlanıp
+     tekrar deneyin.
 
 - Bina erişim noktasının Wi-Fi adı veya şifresi sonradan değiştirilirse, mevcut daire modüllerinin yeni ağ bilgisini
   alması için sıfırlanıp yeniden eşleştirilmesi gerekir (veya yeni erişim noktasına eski Wi-Fi adı ve şifresi verilir).

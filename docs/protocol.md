@@ -226,6 +226,12 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    - **If connection fails (wrong password or AP not found):** The panel restores the previous NVS credentials, keeps
      the portal open (resetting the 120 s timer), returns an HTTP error message explaining the failure, and flashes the
      1 s error LED.
+3. **Single-radio limitation:** On a single-radio ESP32, the SoftAP follows the STA channel. If the submitted AP is on
+   a different channel, the client may be disconnected from `Doorbell-Setup` during the test and never receive the
+   HTTP response. The status LED (2 s solid = committed, 1 s fast blink = rolled back) is therefore the authoritative
+   result indicator; the HTML result page is best-effort.
+4. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or
+   short values are rejected before any connection attempt.
 
 ---
 
