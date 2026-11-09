@@ -1,18 +1,26 @@
-# ESP-IDF build artifacts and generated sdkconfig
+# ESP-IDF build artifacts and generated config (patterns without a slash match at every level)
 build/
-**/build/
-sdkconfig
-**/sdkconfig
-sdkconfig.old
-**/sdkconfig.old
 managed_components/
-**/managed_components/
+sdkconfig
+sdkconfig.old
+# sdkconfig.defaults and dependencies.lock stay tracked (not matched by the rules above)
 
-# Keep sdkconfig.defaults and dependencies.lock tracked
-!sdkconfig.defaults
-!**/sdkconfig.defaults
-!dependencies.lock
-!**/dependencies.lock
+# Flasher GUI build outputs (merged firmware + build-info sidecars)
+flasher/builds/*.bin
+flasher/builds/*.json
+!flasher/builds/.gitkeep
+
+# graphify knowledge-graph output (regenerate with: graphify update .)
+graphify-out/
+
+# Machine-local assistant settings (graphify hooks use an absolute graphify.exe path)
+.claude/settings.local.json
+.codex/
+.gemini/settings.json
+
+# Secrets (API keys, Wi-Fi credentials) must never be committed
+.env
+.env.*
 
 # OS, Python & editor files
 __pycache__/
@@ -23,9 +31,3 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
-
-# Flasher GUI merged firmware output binaries
-flasher/builds/*.bin
-!flasher/builds/.gitkeep
-
-
