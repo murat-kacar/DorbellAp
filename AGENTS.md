@@ -5,6 +5,7 @@ developers and AI agents working on the **DorbellAp** project (Multi-Apartment D
 Wi-Fi AP + UDP).
 
 Normative companion specifications:
+
 - Wire protocol, AEAD nonce/AAD framing, state machines, keypad EBNF grammar, and LED priority table:
   [docs/protocol.md](docs/protocol.md)
 - End-user manual (Turkish): [kullanim-kilavuzu.md](kullanim-kilavuzu.md)
