@@ -70,9 +70,12 @@ static bool is_request_on_softap_interface(httpd_req_t *req)
     return false;
 }
 
-static void url_decode(char *dst, size_t dst_cap, const char *src, size_t src_len)
+/* Returns false if the value contains an encoded NUL (%00): it would silently truncate the C string, so the whole
+ * submission is rejected instead (the flasher rejects NUL in SSID/passphrase the same way). */
+static bool url_decode(char *dst, size_t dst_cap, const char *src, size_t src_len)
 {
     size_t di = 0;
+    bool ok = true;
     for (size_t si = 0; si < src_len && di + 1 < dst_cap; si++) {
         if (src[si] == '+') {
             dst[di++] = ' ';
@@ -80,16 +83,23 @@ static void url_decode(char *dst, size_t dst_cap, const char *src, size_t src_le
                    isxdigit((unsigned char)src[si + 1]) &&
                    isxdigit((unsigned char)src[si + 2])) {
             char hex[3] = {src[si + 1], src[si + 2], '\0'};
-            dst[di++] = (char)strtol(hex, NULL, 16);
+            char c = (char)strtol(hex, NULL, 16);
+            if (c == '\0') {
+                ok = false;
+                break;
+            }
+            dst[di++] = c;
             si += 2;
         } else {
             dst[di++] = src[si];
         }
     }
     dst[di] = '\0';
+    return ok;
 }
 
-static void extract_form_field(const char *body, const char *key, char *out, size_t out_cap)
+/* Returns false if the field value is malformed (encoded NUL); a missing field yields "" and true */
+static bool extract_form_field(const char *body, const char *key, char *out, size_t out_cap)
 {
     out[0] = '\0';
     size_t key_len = strlen(key);
@@ -98,11 +108,11 @@ static void extract_form_field(const char *body, const char *key, char *out, siz
         const char *amp = strchr(p, '&');
         size_t pair_len = amp ? (size_t)(amp - p) : strlen(p);
         if (pair_len > key_len + 1 && strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
-            url_decode(out, out_cap, p + key_len + 1, pair_len - key_len - 1);
-            return;
+            return url_decode(out, out_cap, p + key_len + 1, pair_len - key_len - 1);
         }
         p = amp ? (amp + 1) : NULL;
     }
+    return true;
 }
 
 static void html_escape(const char *src, char *dst, size_t dst_cap)
@@ -207,14 +217,14 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     /* Decode into oversized buffers so over-long input is detected instead of silently truncated */
     char new_ssid[48] = {0};
     char new_pass[80] = {0};
-    extract_form_field(body, "ssid", new_ssid, sizeof(new_ssid));
-    extract_form_field(body, "password", new_pass, sizeof(new_pass));
+    bool fields_ok = extract_form_field(body, "ssid", new_ssid, sizeof(new_ssid));
+    fields_ok = extract_form_field(body, "password", new_pass, sizeof(new_pass)) && fields_ok;
     memset(body, 0, sizeof(body));
 
     /* SSID: 1..32 bytes. Passphrase: empty (open AP) or 8..63 characters (IEEE 802.11i WPA2/WPA3 passphrase) */
     size_t ssid_len = strlen(new_ssid);
     size_t pass_len = strlen(new_pass);
-    if (ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+    if (!fields_ok || ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
         memset(new_pass, 0, sizeof(new_pass));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -424,6 +434,9 @@ void panel_portal_stop(void)
      * g_panel_mutex, so g_panel_cfg is safe to read here. */
     if (s_sta_cfg_untested) {
         s_sta_cfg_untested = false;
+        /* The credential test un-paused STA reconnect. Pause it so connect_sta() only rewrites the config; the single
+         * set_sta_reconnect_paused(false) below then starts exactly one esp_wifi_connect() */
+        doorbell_net_set_sta_reconnect_paused(true);
         ESP_LOGW(TAG, "Credential test interrupted — restoring committed Wi-Fi credentials");
         if (g_panel_cfg.wifi_ssid[0] != '\0') {
             doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);

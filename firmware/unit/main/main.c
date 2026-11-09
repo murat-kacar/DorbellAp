@@ -591,26 +591,32 @@ static void execute_unit_pairing(int udp_sock)
         goto pair_fail;
     }
 
-    /* Two-Phase Commit succeeded: persist pairing state in NVS (I-30, I-50) */
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    memset(&s_unit_state, 0, sizeof(s_unit_state));
-    s_unit_state.paired = 1;
-    s_unit_state.apt_no = challenge.apt_no;
-    memcpy(s_unit_state.panel_mac, challenge.panel_mac, 6);
-    s_unit_state.ap_channel = prov.ap_channel;
-    strncpy(s_unit_state.wifi_ssid, prov.wifi_ssid, sizeof(s_unit_state.wifi_ssid) - 1);
-    strncpy(s_unit_state.wifi_pass, prov.wifi_pass, sizeof(s_unit_state.wifi_pass) - 1);
-    s_unit_state.panel_ipv4 = prov.panel_lan_ipv4;
-    memcpy(s_unit_state.k_apt, prov.k_apt, DOORBELL_KEY_SIZE);
-    s_unit_state.heartbeat_interval_s = prov.heartbeat_interval_s;
-    s_unit_state.tx_counter_ceiling = CONFIG_DOORBELL_NVS_COUNTER_BLOCK;
-    s_unit_state.rx_floor = ack_rx_tx_counter;
-    s_persisted_rx_floor = ack_rx_tx_counter;
-    s_runtime_tx_counter = 1;
+    /* Two-Phase Commit succeeded: persist pairing state in NVS (I-30, I-50). Build the record in a local copy and
+     * adopt it in RAM only after NVS confirms, so a failed save never leaves the module believing it is paired
+     * (which would reject every new pairing attempt until reboot). */
+    doorbell_unit_state_blob_t next = {0};
+    next.paired = 1;
+    next.apt_no = challenge.apt_no;
+    memcpy(next.panel_mac, challenge.panel_mac, 6);
+    next.ap_channel = prov.ap_channel;
+    strncpy(next.wifi_ssid, prov.wifi_ssid, sizeof(next.wifi_ssid) - 1);
+    strncpy(next.wifi_pass, prov.wifi_pass, sizeof(next.wifi_pass) - 1);
+    next.panel_ipv4 = prov.panel_lan_ipv4;
+    memcpy(next.k_apt, prov.k_apt, DOORBELL_KEY_SIZE);
+    next.heartbeat_interval_s = prov.heartbeat_interval_s;
+    next.tx_counter_ceiling = CONFIG_DOORBELL_NVS_COUNTER_BLOCK;
+    next.rx_floor = ack_rx_tx_counter;
 
-    esp_err_t save_err = doorbell_storage_unit_save(&s_unit_state);
+    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    esp_err_t save_err = doorbell_storage_unit_save(&next);
+    if (save_err == ESP_OK) {
+        s_unit_state = next;
+        s_persisted_rx_floor = ack_rx_tx_counter;
+        s_runtime_tx_counter = 1;
+    }
     doorbell_x25519_free(&s_pregen_x25519);
     xSemaphoreGive(s_state_mutex);
+    memset(&next, 0, sizeof(next));
     memset(&prov, 0, sizeof(prov));
 
     if (save_err != ESP_OK) {

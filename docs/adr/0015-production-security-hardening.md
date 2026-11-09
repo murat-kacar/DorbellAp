@@ -1,7 +1,7 @@
 # ADR 0015: Production Security Hardening (Secure Boot v2, Flash Encryption, NVS Encryption)
 
 - **Status:** Accepted (2026-11-10) — Option B for the **Production** flasher profile; implementation pending the
-  bench prototype in §5. The **Development** profile stays unhardened.
+  bench prototype in §6. The **Development** profile stays unhardened.
 - **Date:** 2026-11-10
 - **Supersedes (if accepted):** parts of ADR 0013 (offline, no OTA, UART re-flash) and AGENTS.md §8 item 5
   (`I-2`, `I-16`, `I-17`: Secure Boot / flash encryption / NVS encryption stay disabled)

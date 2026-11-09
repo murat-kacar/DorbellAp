@@ -56,18 +56,32 @@ static int cmd_doorbell_status(int argc, char **argv)
 
 static int cmd_doorbell_wifi(int argc, char **argv)
 {
+    /* The REPL adds every line to the in-RAM history before running it; this line may contain the admin code and the
+     * building passphrase, so drop the whole history first - also when the command is malformed (I-25) */
+    linenoiseHistoryFree();
+
     if (argc < 3 || argc > 4) {
-        printf("Usage: doorbell_wifi <admin_code> <ssid> [password]\n");
+        printf("Usage: doorbell_wifi <admin_code> <ssid> [password]  (quote an SSID that contains spaces)\n");
         return 1;
     }
-
-    /* The REPL adds every line to the in-RAM history before running it; this line contains the admin code and the
-     * building passphrase, so drop the whole history immediately (I-25) */
-    linenoiseHistoryFree();
 
     const char *admin_candidate = argv[1];
     const char *new_ssid = argv[2];
     const char *new_pass = (argc >= 4) ? argv[3] : "";
+
+    /* Single-Radio Rule (I-31): never re-target the STA while pairing or the setup portal owns the radio */
+    if (g_panel_mode != MODE_IDLE) {
+        printf("Error: panel is busy (pairing, portal or reset in progress); try again when idle.\n");
+        return 1;
+    }
+
+    /* Syntax before authentication, as on the keypad (I-20): a malformed request is neither a wrong code nor a
+     * successful login, so it must not touch the shared lockout counter */
+    size_t pass_len = strlen(new_pass);
+    if (strlen(new_ssid) == 0 || strlen(new_ssid) > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+        printf("Error: invalid SSID or passphrase length.\n");
+        return 1;
+    }
 
     /* Authenticated console command (I-14, I-24): constant-time verify & shared lockout */
     if (!panel_verify_admin_code_ct(admin_candidate)) {
@@ -75,14 +89,13 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         return 1;
     }
 
-    size_t pass_len = strlen(new_pass);
-    if (strlen(new_ssid) == 0 || strlen(new_ssid) > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
-        printf("Error: invalid SSID or passphrase length.\n");
-        return 1;
-    }
-
     /* Commit to NVS first, then to RAM: a failed save must leave the active credentials unchanged */
     xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    if (g_panel_mode != MODE_IDLE) {
+        xSemaphoreGive(g_panel_mutex);
+        printf("Error: panel became busy; credentials not changed.\n");
+        return 1;
+    }
     doorbell_panel_cfg_blob_t next = g_panel_cfg;
     memset(next.wifi_ssid, 0, sizeof(next.wifi_ssid));
     memset(next.wifi_pass, 0, sizeof(next.wifi_pass));
