@@ -183,8 +183,8 @@ Normative companion specifications:
 - **Unicast + Dual-Path Broadcast Retry (`I-29`, `I-33`, `I-69`):**
   - Attempt 1 is sent via **unicast** to the peer's last known IPv4 address (or limited broadcast `255.255.255.255` if
     unknown).
-  - If no `ACK` arrives within `Application ACK timeout` (`400 ms` $\pm 25\text{ ms}$ jitter — to be verified on the
-    bench), retries (`RING retries = 2`, `OPEN_DOOR retries = 1`, `HEARTBEAT retries = 1`) send the **byte-identical
+  - If no `ACK` arrives within `Application ACK timeout` (`400 ms` $\pm 25\text{ ms}$ jitter — validated on the
+    hardware bench and in a field installation with firmware `v1.0`, 802.11b-only stations), retries (`RING retries = 2`, `OPEN_DOOR retries = 1`, `HEARTBEAT retries = 1`) send the **byte-identical
     frame** to **both** the last known unicast IP **and** the limited broadcast address (`255.255.255.255`, RFC 1122
     §3.2.1.3).
   - Receivers cache the last `ACK` per peer and re-send it on duplicate `(src_id, tx_counter, seq_id)` without
