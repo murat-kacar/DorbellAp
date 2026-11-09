@@ -22,6 +22,7 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 | UDP port | 19500 | Panel ve daire modüllerinin UDP haberleşmesinde kullandığı port (IANA listesinde atanmamış User Port aralığındadır ve lwIP ephemeral port aralığı olan 49152–65535 ile çakışmaz). |
 | Set a Wi-Fi country code | Kapalı | Açılırsa aşağıdaki ülke kodu uygulanır. Kapalıyken ESP-IDF'in varsayılan ülke ayarı (`01` — kanal 1–11 aktif, kanal 12–13 pasif tarama) kullanılır. |
 | Country code | (boş) | İki harfli ülke kodu, örn. `TR` (kanal 1–13, maks. 20 dBm). Bina AP'si kanal 12 veya 13'te çalışıyorsa açılmalıdır. |
+| Restrict the station interface to 802.11b | Kapalı | Açılırsa cihaz bina AP'sine yalnızca 802.11b hızlarıyla (1–11 Mbps) bağlanır. Düşük hızlar daha zayıf sinyalde çalıştığı için menzili artırabilir. Bina AP'sinde "802.11b'yi kapat" veya 11 Mbps üzeri asgari hız ayarı varsa cihaz bağlanamaz. Kapalıyken ESP-IDF varsayılanı (802.11b/g/n) kullanılır. |
 
 - **Bina erişim noktası (AP) ve ağ kurulum kontrol listesi:**
   1. **Görünür SSID ve Sabit Kanal:** 2,4 GHz bandında birbiriyle çakışmayan **1, 6 veya 11.** kanallardan biri sabit

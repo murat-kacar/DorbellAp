@@ -500,6 +500,14 @@ PANEL_PARAMS: List[ParamSpec] = [
         max_len=2,
     ),
     ParamSpec(
+        "DOORBELL_WIFI_STA_11B_ONLY",
+        "Station 802.11b only",
+        "Network & Pairing",
+        "bool",
+        False,
+        "Use only 802.11b rates (1-11 Mbps) for longer reach. The building AP must accept 802.11b clients.",
+    ),
+    ParamSpec(
         "DOORBELL_NVS_COUNTER_BLOCK",
         "NVS counter block size",
         "Network & Pairing",
@@ -894,6 +902,14 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "TR",
         "ISO 3166-1 alpha-2 country code (e.g., TR, DE, US).",
         max_len=2,
+    ),
+    ParamSpec(
+        "DOORBELL_WIFI_STA_11B_ONLY",
+        "Station 802.11b only",
+        "Network & Heartbeat",
+        "bool",
+        False,
+        "Use only 802.11b rates (1-11 Mbps) for longer reach. The building AP must accept 802.11b clients.",
     ),
     ParamSpec(
         "DOORBELL_NVS_COUNTER_BLOCK",

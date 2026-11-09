@@ -36,6 +36,16 @@ menu "Doorbell System Configuration"
             help
                 Two-letter country code (e.g., "TR" for channels 1-13).
 
+        config DOORBELL_WIFI_STA_11B_ONLY
+            bool "Restrict the station interface to 802.11b"
+            default n
+            help
+                Calls esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B) so the station only uses the 802.11b
+                DSSS/CCK rates (1, 2, 5.5, 11 Mbps), which need a lower SNR than OFDM/HT rates and can extend the
+                usable link distance. Disabled = ESP-IDF default (802.11b/g/n).
+                The building AP must still accept 802.11b clients: an AP with "disable 802.11b" or a minimum basic
+                rate above 11 Mbps will refuse association.
+
         config DOORBELL_ACK_TIMEOUT_MS
             int "Application ACK timeout (ms)"
             range 100 5000
