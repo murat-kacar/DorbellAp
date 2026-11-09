@@ -243,17 +243,46 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
             memset(new_pass, 0, sizeof(new_pass));
             return ESP_FAIL;
         }
+        char prev_ssid[33];
+        char prev_pass[65];
+        memcpy(prev_ssid, g_panel_cfg.wifi_ssid, sizeof(prev_ssid));
+        memcpy(prev_pass, g_panel_cfg.wifi_pass, sizeof(prev_pass));
+
         memset(g_panel_cfg.wifi_ssid, 0, sizeof(g_panel_cfg.wifi_ssid));
         memset(g_panel_cfg.wifi_pass, 0, sizeof(g_panel_cfg.wifi_pass));
         strncpy(g_panel_cfg.wifi_ssid, new_ssid, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, new_pass, sizeof(g_panel_cfg.wifi_pass) - 1);
         esp_err_t save_err = doorbell_storage_panel_save_cfg(&g_panel_cfg);
+        memset(new_pass, 0, sizeof(new_pass));
+
+        if (save_err != ESP_OK) {
+            ESP_LOGE(TAG, "NVS save failed for new Wi-Fi credentials (%s) — rolling back", esp_err_to_name(save_err));
+            memcpy(g_panel_cfg.wifi_ssid, prev_ssid, sizeof(g_panel_cfg.wifi_ssid));
+            memcpy(g_panel_cfg.wifi_pass, prev_pass, sizeof(g_panel_cfg.wifi_pass));
+            memset(prev_pass, 0, sizeof(prev_pass));
+            doorbell_net_set_sta_reconnect_paused(true);
+            if (g_panel_cfg.wifi_ssid[0] != '\0') {
+                doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);
+            } else {
+                doorbell_net_disconnect_sta();
+            }
+            s_sta_cfg_untested = false;
+            s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
+            xSemaphoreGive(g_panel_mutex);
+
+            doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+            httpd_resp_set_type(req, "text/html; charset=utf-8");
+            return httpd_resp_sendstr(req,
+                "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                "<body><h3>Kayıt hatası!</h3>"
+                "<p>Wi-Fi bağlantısı kuruldu ancak ayarlar kalıcı hafızaya (NVS) kaydedilemedi.</p>"
+                "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+        }
+
+        memset(prev_pass, 0, sizeof(prev_pass));
         s_sta_cfg_untested = false;
         xSemaphoreGive(g_panel_mutex);
-        if (save_err != ESP_OK) {
-            ESP_LOGE(TAG, "Connected with new Wi-Fi credentials but NVS save failed: %s", esp_err_to_name(save_err));
-        }
-        memset(new_pass, 0, sizeof(new_pass));
 
         doorbell_led_panel_start(LED_PANEL_RESULT_OK);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -360,10 +389,10 @@ void panel_portal_stop(void)
     }
     doorbell_led_panel_stop(LED_PANEL_PORTAL);
     doorbell_net_stop_softap();
-    doorbell_net_set_sta_reconnect_paused(false);
 
     /* httpd_stop() has returned, so no handler is running. If a credential test was interrupted, the STA driver still
-     * holds the submitted (uncommitted) network: switch back to the committed credentials. Callers hold
+     * holds the submitted (uncommitted) network: switch back to the committed credentials BEFORE unpausing STA
+     * reconnect so the driver never initiates a spurious connection attempt to the aborted network. Callers hold
      * g_panel_mutex, so g_panel_cfg is safe to read here. */
     if (s_sta_cfg_untested) {
         s_sta_cfg_untested = false;
@@ -374,6 +403,8 @@ void panel_portal_stop(void)
             doorbell_net_disconnect_sta();
         }
     }
+
+    doorbell_net_set_sta_reconnect_paused(false);
 
     s_portal_deadline_us = 0;
     s_portal_close_pending = false;

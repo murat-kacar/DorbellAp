@@ -7,9 +7,11 @@
 static const char *TAG = "doorbell_led";
 
 /* "On" steps use LED_BLINK_BRIGHTNESS so these levels are honoured; LED_BLINK_HOLD would ignore them and drive max
- * duty. "Off" steps stay LED_BLINK_HOLD with LED_STATE_OFF (duty 0). */
-#define BRIGHTNESS_FULL ((uint32_t)((255U * CONFIG_DOORBELL_LED_FULL_BRIGHTNESS_PCT) / 100U))
-#define BRIGHTNESS_DIM  ((uint32_t)((255U * CONFIG_DOORBELL_LED_DIM_BRIGHTNESS_PCT) / 100U))
+ * duty. "Off" steps stay LED_BLINK_HOLD with LED_STATE_OFF (duty 0). Clamp BRIGHTNESS_DIM to >= 23 because
+ * espressif/led_indicator's gamma=2.3 LUT maps inputs 0..22 to 0 (completely dark). */
+#define BRIGHTNESS_FULL    ((uint32_t)((255U * CONFIG_DOORBELL_LED_FULL_BRIGHTNESS_PCT) / 100U))
+#define BRIGHTNESS_DIM_RAW ((uint32_t)((255U * CONFIG_DOORBELL_LED_DIM_BRIGHTNESS_PCT) / 100U))
+#define BRIGHTNESS_DIM     ((BRIGHTNESS_DIM_RAW < 23U) ? 23U : BRIGHTNESS_DIM_RAW)
 
 #define FAST_HALF_MS    (CONFIG_DOORBELL_LED_FAST_PERIOD_MS / 2)
 #define MED_HALF_MS     (CONFIG_DOORBELL_LED_MEDIUM_PERIOD_MS / 2)
