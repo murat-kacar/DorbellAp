@@ -46,6 +46,7 @@ Panelde daire numarasını yazıp `#` tuşuna basın:
 ## 3. Sakin: kapıyı açma
 
 ### 3.1. Daireden
+
 Daire modülündeki **kapı açma butonuna** basıp bırakın. Kapı kilidi 0,5 saniye açılır, paneldeki LED 0,5 saniye sabit
 yanar.
 
@@ -58,16 +59,20 @@ yanar.
 - 0,1 saniyeden kısa veya 30 saniyeden uzun basışlar dikkate alınmaz (parazit veya sıkışmış buton).
 
 ### 3.2. Panelden şifreyle
+
 ```text
 * <kullanıcı şifresi> #        Örnek: * 1234 #
 ```
+
 - Kullanıcı şifresi binanın tamamı için tektir (4 hane; yönetici şifresiyle aynı olamaz).
 - Kapı açıkken (0,5 saniye) gelen ikinci açma komutu yok sayılır.
 
 ### 3.3. Yazdığınızı iptal etme
+
 ```text
 * #
 ```
+
 Hiç tuşa basılmazsa yazılan 10 saniye sonra kendiliğinden silinir.
 
 ---
@@ -90,6 +95,7 @@ Yönetici şifresi 8 hanedir. Tüm komutlar `*` ile başlar, `#` ile biter.
   değiştirin.
 
 ### 4.1. Yanlış şifre kilidi
+
 - Üst üste 5 yanlış şifreden sonra `*` ile başlayan girişler 60 saniye kilitlenir. LED seyrek tek flaşlar yapar.
 - Hatalar sürerse kilit süresi her seferinde iki katına çıkar (120, 240 saniye …), en fazla 15 dakika.
 - Doğru şifre girilince kilit seviyesi sıfırlanır.
@@ -97,6 +103,7 @@ Yönetici şifresi 8 hanedir. Tüm komutlar `*` ile başlar, `#` ile biter.
 - Yanlış biçimde yazılmış giriş (örneğin `**#` ya da `* 1234 * #`) hata gösterir ama yanlış şifre sayılmaz.
 
 ### 4.2. Bina Wi-Fi ağını ayarlama (portal)
+
 Bina erişim noktasının (AP) Wi-Fi adı (SSID) ve şifresi kurulumdan önce belirlenmiş olur. Bu bilgiyi firmware'i yeniden
 derlemeden panelde değiştirmek için:
 
@@ -136,12 +143,12 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
      doğrular.
 3. **Sonuç:**
 
-| Durum | Panel | Modül |
-| :--- | :--- | :--- |
-| Başarılı | LED 2 saniye sabit yanar | LED 2 saniye tam parlak yanar, zil bir kez çalar, sonra LED loş sabit kalır |
-| Birden fazla eşleşmemiş modül bulundu | LED 1 saniye hızlı yanıp söner; eşleştirme iptal | Pencere bitince eşleşmemiş duruma döner |
-| Modül bulunamadı veya bina ağına bağlanamadı | LED 1 saniye hızlı yanıp söner | Eşleşmemiş duruma döner |
-| Daire numarası dolu veya panel ağa bağlı değil | LED 1 saniye hızlı yanıp söner | — |
+   | Durum | Panel | Modül |
+   | :--- | :--- | :--- |
+   | Başarılı | LED 2 saniye sabit yanar | LED 2 saniye tam parlak yanar, zil bir kez çalar, sonra LED loş sabit kalır |
+   | Birden fazla eşleşmemiş modül bulundu | LED 1 saniye hızlı yanıp söner; eşleştirme iptal | Pencere bitince eşleşmemiş duruma döner |
+   | Modül bulunamadı veya bina ağına bağlanamadı | LED 1 saniye hızlı yanıp söner | Eşleşmemiş duruma döner |
+   | Daire numarası dolu veya panel ağa bağlı değil | LED 1 saniye hızlı yanıp söner | — |
 
 4. **Etiketleme ve dairede doğrulama:** Modülün üzerine eşleştirildiği **daire numarasını** yazın ve modülü daireye
    takın.
@@ -150,6 +157,7 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
      ve panelden `<daire no> #` tuşlayarak doğru dairenin zilinin çaldığını doğrulayın.
 
 **Kurallar:**
+
 - Dolu bir daire numarasının üzerine yazılmaz; önce o kaydı silin.
 - Eşleşmiş bir modül, sıfırlanmadan tekrar eşleştirilemez (bölüm 6.2; eşleşmiş modülde eşleştirme butonuna basılırsa
   üçlü flaş ile reddedilir).
@@ -160,12 +168,15 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
 ## 6. Sıfırlama
 
 ### 6.1. Panel şifre sıfırlama
+
 Panel kutusunun içindeki gizli butonu **10–60 saniye** basılı tutup bırakın (10. saniyede LED sabit yanmaya başlar,
 arada kısa söner; bu sırada bırakın). Değiştirilmiş şifreler silinir; panel etiketteki fabrika şifrelerine döner. Daire
 kayıtları ve bina Wi-Fi bilgileri korunur.
 
 ### 6.2. Daire modülü sıfırlama
+
 Modüldeki gizli **sıfırlama butonunu** **7–12 saniye** basılı tutup bırakın.
+
 - 7. saniyede LED sabit yanmaya başlar (arada kısa söner). **Bu sırada bırakın** (7–12 saniye arası); 15 saniyede
   LED üçlü flaş yapar ve işlem iptal olur.
 - Modülün eşleştirme ve Wi-Fi bilgileri silinir, modül yeniden başlar ve eşleşmemiş duruma döner.
@@ -174,13 +185,16 @@ Modüldeki gizli **sıfırlama butonunu** **7–12 saniye** basılı tutup bıra
   silinir.
 
 ### 6.3. Bina sıfırlama
+
 ```text
 * <yönetici> * 6 * <yönetici> #
 ```
+
 Tüm daire kayıtları ve şifreleme anahtarları silinir; şifreler ve bina Wi-Fi ağı bilgileri korunur. Panel yeniden
 başlar. **Bütün daire modülleri sıfırlanıp yeniden eşleştirilmelidir.**
 
 ### 6.4. Yeniden başlatma (hiçbir şey silinmez)
+
 - Cihaz kilitlenirse kendini yeniden başlatır; ne olduğu panelin monitöründe görünür ("last restart: task watchdog"
   gibi).
 - Panel uzun süre hiçbir modülden rapor alamazsa (varsayılan 15 dakika) kendini yeniden başlatır. Durum sürerse bekleme
@@ -190,6 +204,7 @@ başlar. **Bütün daire modülleri sıfırlanıp yeniden eşleştirilmelidir.**
   görünür). Kayıtlar, şifreler, kilit durumu, Wi-Fi ayarları ve eşleştirme bilgileri korunur.
 
 ### 6.5. Panelin değiştirilmesi
+
 Daire kayıtları ve şifreleme anahtarları yalnızca panelde saklanır; bu bilgilerin yedeği alınamaz. Panel arızalanıp
 yenisiyle değiştirilirse (veya panelin hafızası silinirse):
 
@@ -208,6 +223,7 @@ Birden fazla durum aynı anda oluşursa üstteki (öncelikli) durum gösterilir;
 sürekli durumuna döner.
 
 ### 7.1. Panel
+
 | LED | Anlamı |
 | :--- | :--- |
 | Sönük | Beklemede, ağa bağlı ve hazır |
@@ -222,6 +238,7 @@ sürekli durumuna döner.
 | Seyrek tek flaşlar | Tuş takımı yanlış şifre nedeniyle kilitli veya panelin bina Wi-Fi ağı bağlantısı kopuk |
 
 ### 7.2. Daire modülü
+
 | LED | Anlamı |
 | :--- | :--- |
 | Tekrarlayan çift flaş | Eşleşmemiş |
