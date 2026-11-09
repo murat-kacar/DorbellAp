@@ -5,7 +5,7 @@
 #include "driver/gpio.h"
 
 #define DOORBELL_FW_VERSION_MAJOR 1
-#define DOORBELL_FW_VERSION_MINOR 0
+#define DOORBELL_FW_VERSION_MINOR 1
 
 /* Tick duration in milliseconds from FreeRTOS configuration */
 #define DOORBELL_TICK_MS (1000 / CONFIG_FREERTOS_HZ)

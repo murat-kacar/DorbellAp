@@ -247,6 +247,9 @@ Normative companion specifications:
   5. `CONFIG_DOORBELL_WIFI_STA_11B_ONLY=y` (ESP-IDF default protocol is 802.11b/g/n): the station interface runs
      `esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B)` so links use the low-SNR DSSS/CCK rates for longer
      reach. The building AP must accept 802.11b clients (no "disable 802.11b" / minimum basic rate > 11 Mbps).
+  6. Flasher **Production** profile builds with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`); the **Development**
+     profile keeps the ESP-IDF default `-Og`. The `-Og` panel app fills 91.6 % of the 1 MB factory partition.
+     Assertions stay enabled in both. The Production profile does not burn eFuses (hardening ADR pending).
 
 ---
 
@@ -275,10 +278,11 @@ finalized:
      boundary. Factory user and admin codes printed on each panel's label MUST be generated randomly per device during
      initial factory provisioning (never a shared static code across devices).
 5. **`I-2`, `I-16`, `I-17` — Offline Operation, No OTA, Unencrypted Flash/NVS (Accepted Architectural Scope):**
-   - In accordance with ADR 0013 (offline system, no OTA, field configuration updates via UART re-flash when compile-time
-     settings change), Release-mode Flash Encryption, NVS Encryption, and Secure Boot v2 remain disabled (ESP-IDF
-     defaults). Physical flash readout requiring enclosure disassembly is recorded as an accepted boundary for this
-     closed residential intercom tier.
+   - **Development profile:** in accordance with ADR 0013 (offline system, no OTA, UART re-flash), Release-mode Flash
+     Encryption, NVS Encryption, and Secure Boot v2 remain disabled (ESP-IDF defaults).
+   - **Production profile:** superseded by [ADR 0015](docs/adr/0015-production-security-hardening.md) (Accepted,
+     Option B): Secure Boot v2 (RSA), release-mode flash encryption and NVS encryption, **no field updates**; signing
+     key held offline by the owner. Implementation pending the bench prototype in ADR 0015 §6.
 6. **`I-6`, `I-19`, `I-44` — Shared 4-Digit User Code & Lockout Policy (Accepted Product Scope):**
    - The single building-wide 4-digit user code (`I-6`), reset-on-success lockout behavior (`I-19`), and shared `*`-prefix
      keypad lockout counter (`I-44`) are intentionally retained to preserve the exact end-user behavior specified in

@@ -31,3 +31,6 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
+
+# Secure Boot signing keys are kept offline by the owner (ADR 0015) and must never be committed
+*.pem

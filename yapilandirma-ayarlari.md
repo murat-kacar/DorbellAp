@@ -237,4 +237,5 @@ bileşenlerine aittir. Bir sebep olmadıkça varsayılanda bırakın.
 | Task watchdog / panic / timeout | Panic açık, 5 s | Kilitlenen veya CPU'yu bırakmayan bir görevde cihazı yeniden başlatır. Uygulama görevleri ve zamanlayıcı hatları watchdog'a kaydedilir. Panic kapatılırsa watchdog sadece uyarı yazar. |
 | Console UART / baud rate | UART0 / 115200 | Seri monitör portu ve hızı |
 | Flash mode / frequency / size | DIO / 40 MHz / 2 MB | Flash bellek ayarları. Boyut 2 MB'tır; kartla uyumlu olmalı (OTA kullanılmaz, ADR 0013). |
+| Compiler optimization | Development: Debug (`-Og`) · Production: Size (`-Os`) | Flasher'daki profil seçer. Production (üretim) derlemesi uygulamayı küçültür ve 1 MB'lık uygulama bölümünde yer açar; Development hata ayıklamaya uygun mevcut ayardır. Assert kontrolleri ikisinde de açıktır. Production profili eFuse yakmaz. |
 | Default log verbosity | Info | Monitörde ne kadar ayrıntı görüneceği (şifreler ve anahtarlar hiçbir seviyede loglanmaz). |

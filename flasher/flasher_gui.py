@@ -2081,19 +2081,19 @@ class DoorbellFlasherApp:
             variable=self.profile_var,
             value="dev",
         ).pack(anchor=tk.W)
-        rb_prod = ttk.Radiobutton(
+        ttk.Radiobutton(
             prof_box,
-            text="Production (irreversible, burns eFuses)",
+            text="Production (release build: -Os)",
             variable=self.profile_var,
             value="prod",
-            state=tk.DISABLED,
-        )
-        rb_prod.pack(anchor=tk.W, pady=(2, 2))
+        ).pack(anchor=tk.W, pady=(2, 2))
         tk.Label(
             prof_box,
-            text="Production is not used in this scope (ADR 0013 / I-16).",
+            text="Development keeps the debug build (-Og). Production only changes compiler settings;\n"
+            "it does not burn eFuses (Secure Boot / flash encryption ADR pending, ADR 0013 / I-16).",
             fg="#666666",
             font=("Segoe UI", 8),
+            justify=tk.LEFT,
         ).pack(anchor=tk.W)
 
         # 2. Role to configure and build
@@ -2545,7 +2545,7 @@ class DoorbellFlasherApp:
         self.btn_build.configure(state=tk.DISABLED)
         threading.Thread(
             target=self._worker_build_firmware,
-            args=(role, validated),
+            args=(role, validated, self.profile_var.get() == "prod"),
             daemon=True,
         ).start()
 
@@ -2678,14 +2678,31 @@ class DoorbellFlasherApp:
         env["PATH"] = os.pathsep.join([tool_paths, str(IDF_VENV_PYTHON.parent), env.get("PATH", "")])
         return env
 
-    def _worker_build_firmware(self, role: str, values: Dict[str, Any]) -> None:
+    @staticmethod
+    def _apply_build_profile(sdkconfig_path: Path, production: bool) -> None:
+        """Select the compiler optimization choice for the profile: Production -Os, Development the -Og default."""
+        chosen = "SIZE" if production else "DEBUG"
+        # Deprecated aliases kconfgen keeps in sdkconfig: LEVEL_RELEASE -> SIZE, LEVEL_DEBUG / DEFAULT -> DEBUG
+        aliases = {"LEVEL_RELEASE": "SIZE", "LEVEL_DEBUG": "DEBUG", "DEFAULT": "DEBUG"}
+        out: List[str] = []
+        for line in sdkconfig_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            m = re.match(r"^(?:# )?CONFIG_COMPILER_OPTIMIZATION_([A-Z_]+)(?:=y| is not set)$", line)
+            if m and m.group(1) in ("DEBUG", "SIZE", "PERF", "NONE", *aliases):
+                name = m.group(1)
+                on = aliases.get(name, name) == chosen
+                line = f"CONFIG_COMPILER_OPTIMIZATION_{name}=y" if on else f"# CONFIG_COMPILER_OPTIMIZATION_{name} is not set"
+            out.append(line)
+        sdkconfig_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+    def _worker_build_firmware(self, role: str, values: Dict[str, Any], production: bool = False) -> None:
         is_panel = role == "panel"
         fw_dir = PANEL_FW_DIR if is_panel else UNIT_FW_DIR
         specs = PANEL_PARAMS if is_panel else APARTMENT_PARAMS
         app_bin_name = "doorbell_panel.bin" if is_panel else "doorbell_unit.bin"
         prefix = "panel" if is_panel else "apartment"
 
-        self.log(f"\n=== Building {prefix} firmware ===\n")
+        profile_name = "Production (-Os)" if production else "Development (-Og)"
+        self.log(f"\n=== Building {prefix} firmware - {profile_name} ===\n")
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
 
         try:
@@ -2709,6 +2726,7 @@ class DoorbellFlasherApp:
                     apply_specs.append(ParamSpec(key, key, "", "str", "", ""))
                     apply_values[key] = digits[: int(length)]
             self._apply_kconfig_to_sdkconfig(sdkconfig_path, apply_specs, apply_values)
+            self._apply_build_profile(sdkconfig_path, production)
             self.log("[Build] Applied GUI Kconfig settings to sdkconfig. Running idf.py build...\n")
 
             rc = self._run_logged_cmd([python_exe, str(idf_py), "build"], cwd=fw_dir, env=env)
@@ -2727,7 +2745,7 @@ class DoorbellFlasherApp:
 
             BUILDS_DIR.mkdir(parents=True, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            out_name = f"{prefix}_{ts}.bin"
+            out_name = f"{prefix}_{ts}{'_prod' if production else ''}.bin"
             out_path = BUILDS_DIR / out_name
 
             merge_cmd = [
@@ -2757,7 +2775,7 @@ class DoorbellFlasherApp:
                 self.log("[Build] ERROR: esptool merge-bin failed.\n")
                 return
 
-            info: Dict[str, Any] = {"role": prefix}
+            info: Dict[str, Any] = {"role": prefix, "profile": "production" if production else "development"}
             if is_panel:
                 info["admin_code_len"] = values["DOORBELL_PANEL_ADMIN_CODE_LEN"]
                 info["user_code_len"] = values["DOORBELL_PANEL_USER_CODE_LEN"]
