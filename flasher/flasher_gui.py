@@ -60,6 +60,7 @@ PROJECT_ROOT = FLASHER_DIR.parent
 BUILDS_DIR = FLASHER_DIR / "builds"
 PANEL_FW_DIR = PROJECT_ROOT / "firmware" / "panel"
 UNIT_FW_DIR = PROJECT_ROOT / "firmware" / "unit"
+KCONFIG_PROJBUILD_PATH = PROJECT_ROOT / "components" / "doorbell_common" / "Kconfig.projbuild"
 
 # Import NVS packing helper from tools/factory_provision_panel.py
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
@@ -184,7 +185,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Door relay active LOW",
         "GPIO",
         "bool",
-        False,
+        True,
         "Enable if the door relay module is energized by a LOW logic level.",
     ),
     ParamSpec(
@@ -270,9 +271,9 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Apartments & Codes",
         "int",
         1,
-        "Lowest valid apartment number accepted on the keypad (1-99).",
+        "Lowest valid apartment number accepted on the keypad (1-254).",
         1,
-        99,
+        254,
     ),
     ParamSpec(
         "DOORBELL_PANEL_MAX_APT_NO",
@@ -372,9 +373,9 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         19500,
-        "UDP port used for all operational and pairing messages (1024-65535).",
+        "UDP port used for all operational and pairing messages (1024-49151).",
         1024,
-        65535,
+        49151,
     ),
     ParamSpec(
         "DOORBELL_ACK_TIMEOUT_MS",
@@ -382,9 +383,9 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         400,
-        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-2000 ms).",
+        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-5000 ms).",
         100,
-        2000,
+        5000,
     ),
     ParamSpec(
         "DOORBELL_PANEL_RING_RETRIES",
@@ -412,9 +413,9 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         10,
-        "Seconds to wait for PAIR_COMPLETE on the building LAN after SoftAP handoff (5-30 s).",
+        "Seconds to wait for PAIR_COMPLETE on the building LAN after SoftAP handoff (5-60 s).",
         5,
-        30,
+        60,
     ),
     ParamSpec(
         "DOORBELL_PANEL_PORTAL_TIMEOUT_S",
@@ -422,8 +423,8 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         120,
-        "Seconds the Doorbell-Setup WPA3-SAE web portal stays open (*<admin>*5#, 60-600 s).",
-        60,
+        "Seconds the Doorbell-Setup WPA3-SAE web portal stays open (*<admin>*5#, 30-600 s).",
+        30,
         600,
     ),
     ParamSpec(
@@ -431,7 +432,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Set Wi-Fi country code",
         "Network & Pairing",
         "bool",
-        True,
+        False,
         "Apply explicit regulatory country code so channels 12-13 can be scanned actively.",
     ),
     ParamSpec(
@@ -449,9 +450,9 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         100,
-        "Write-ahead reservation block size for monotonic replay counters in NVS (10-1000).",
+        "Write-ahead reservation block size for monotonic replay counters in NVS (10-10000).",
         10,
-        1000,
+        10000,
     ),
     # Heartbeat & Silence Restart
     ParamSpec(
@@ -468,9 +469,19 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Heartbeat",
         "int",
         300,
-        "Seconds between module heartbeats provisioned during pairing (30-86400 s).",
+        "Seconds between module heartbeats provisioned during pairing (30-3600 s).",
         30,
-        86400,
+        3600,
+    ),
+    ParamSpec(
+        "DOORBELL_HEARTBEAT_RETRIES",
+        "HEARTBEAT retries",
+        "Heartbeat",
+        "int",
+        1,
+        "Number of retries when HEARTBEAT_ACK is not received (0-5).",
+        0,
+        5,
     ),
     ParamSpec(
         "DOORBELL_PANEL_SILENCE_RESTART",
@@ -487,8 +498,8 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "Full brightness level (20-100%).",
-        20,
+        "Full brightness level (10-100%).",
+        10,
         100,
     ),
     ParamSpec(
@@ -517,8 +528,8 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         200,
-        "Full period of fast blink (error / visual bell, 50-1000 ms).",
-        50,
+        "Full period of fast blink (error / visual bell, 40-1000 ms).",
+        40,
         1000,
     ),
     ParamSpec(
@@ -567,8 +578,8 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Total repeat period for double/triple flash patterns (400-5000 ms).",
-        400,
+        "Total repeat period for double/triple flash patterns (500-5000 ms).",
+        500,
         5000,
     ),
     ParamSpec(
@@ -587,7 +598,27 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         2000,
-        "Duration of solid ON confirmation after a successful operation (500-10000 ms).",
+        "Duration of solid ON confirmation after a successful operation (200-10000 ms).",
+        200,
+        10000,
+    ),
+    ParamSpec(
+        "DOORBELL_LED_ERR_DURATION_MS",
+        "Error duration (ms)",
+        "Status LED",
+        "int",
+        1000,
+        "Duration of fast-blink error indication (200-10000 ms).",
+        200,
+        10000,
+    ),
+    ParamSpec(
+        "DOORBELL_LED_NO_RESP_DURATION_MS",
+        "No-response duration (ms)",
+        "Status LED",
+        "int",
+        3000,
+        "Duration of medium-blink no-response indication (500-10000 ms).",
         500,
         10000,
     ),
@@ -706,20 +737,20 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Door button min press (ms)",
         "Bell & Buttons",
         "int",
-        30,
-        "Minimum valid press duration for the door-open button (10-500 ms).",
-        10,
-        500,
+        100,
+        "Minimum valid press duration for the door-open button (20-2000 ms).",
+        20,
+        2000,
     ),
     ParamSpec(
         "DOORBELL_UNIT_DOOR_BTN_MAX_S",
         "Door button max press (s)",
         "Bell & Buttons",
         "int",
-        3,
-        "Maximum valid press duration for the door-open button (1-30 s).",
-        1,
         30,
+        "Maximum valid press duration for the door-open button (5-120 s).",
+        5,
+        120,
     ),
     ParamSpec(
         "DOORBELL_UNIT_HOLD_BTN_MIN_S",
@@ -727,9 +758,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         7,
-        "Start of the valid hold window for hidden pairing and reset buttons (3-30 s).",
+        "Start of the valid hold window for hidden pairing and reset buttons (3-20 s).",
         3,
-        30,
+        20,
     ),
     ParamSpec(
         "DOORBELL_UNIT_HOLD_BTN_MAX_S",
@@ -737,9 +768,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         12,
-        "End of the valid hold window for hidden pairing and reset buttons (5-45 s).",
+        "End of the valid hold window for hidden pairing and reset buttons (5-30 s).",
         5,
-        45,
+        30,
     ),
     ParamSpec(
         "DOORBELL_UNIT_HOLD_BTN_CANCEL_S",
@@ -747,8 +778,8 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         15,
-        "Hold duration at which the action is cancelled with a triple flash (6-65 s).",
-        6,
+        "Hold duration at which the action is cancelled with a triple flash (8-65 s).",
+        8,
         65,
     ),
     # Network & Heartbeat
@@ -758,9 +789,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         19500,
-        "UDP port used for all operational and pairing messages (1024-65535).",
+        "UDP port used for all operational and pairing messages (1024-49151).",
         1024,
-        65535,
+        49151,
     ),
     ParamSpec(
         "DOORBELL_ACK_TIMEOUT_MS",
@@ -768,9 +799,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         400,
-        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-2000 ms).",
+        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-5000 ms).",
         100,
-        2000,
+        5000,
     ),
     ParamSpec(
         "DOORBELL_UNIT_OPEN_DOOR_RETRIES",
@@ -788,16 +819,16 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         10,
-        "Seconds allowed to associate to the building AP and complete PAIR_COMPLETE (5-30 s).",
+        "Seconds allowed to associate to the building AP and complete PAIR_COMPLETE (5-60 s).",
         5,
-        30,
+        60,
     ),
     ParamSpec(
         "DOORBELL_WIFI_SET_COUNTRY",
         "Set Wi-Fi country code",
         "Network & Heartbeat",
         "bool",
-        True,
+        False,
         "Apply explicit regulatory country code so channels 12-13 can be scanned actively.",
     ),
     ParamSpec(
@@ -815,9 +846,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         100,
-        "Write-ahead reservation block size for monotonic replay counters in NVS (10-1000).",
+        "Write-ahead reservation block size for monotonic replay counters in NVS (10-10000).",
         10,
-        1000,
+        10000,
     ),
     ParamSpec(
         "DOORBELL_HEARTBEAT_ENABLED",
@@ -833,9 +864,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         300,
-        "Fallback heartbeat interval in seconds if not overridden during pairing (30-86400 s).",
+        "Fallback heartbeat interval in seconds if not overridden during pairing (30-3600 s).",
         30,
-        86400,
+        3600,
     ),
     ParamSpec(
         "DOORBELL_HEARTBEAT_RETRIES",
@@ -843,9 +874,9 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         1,
-        "Number of retries when HEARTBEAT_ACK is not received (0-3).",
+        "Number of retries when HEARTBEAT_ACK is not received (0-5).",
         0,
-        3,
+        5,
     ),
     # Status LED
     ParamSpec(
@@ -854,8 +885,8 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "Full brightness level (20-100%).",
-        20,
+        "Full brightness level (10-100%).",
+        10,
         100,
     ),
     ParamSpec(
@@ -869,13 +900,23 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         50,
     ),
     ParamSpec(
+        "DOORBELL_LED_SHORT_FLASH_MS",
+        "Short flash (ms)",
+        "Status LED",
+        "int",
+        50,
+        "Short flash duration in ms (10-500 ms).",
+        10,
+        500,
+    ),
+    ParamSpec(
         "DOORBELL_LED_FAST_PERIOD_MS",
         "Fast blink period (ms)",
         "Status LED",
         "int",
         200,
-        "Full period of fast blink (visual bell, 50-1000 ms).",
-        50,
+        "Full period of fast blink (visual bell, 40-1000 ms).",
+        40,
         1000,
     ),
     ParamSpec(
@@ -924,8 +965,8 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Total repeat period for double/triple flash patterns (400-5000 ms).",
-        400,
+        "Total repeat period for double/triple flash patterns (500-5000 ms).",
+        500,
         5000,
     ),
     ParamSpec(
@@ -944,11 +985,115 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         2000,
-        "Duration of solid ON confirmation after door open or pairing success (500-10000 ms).",
+        "Duration of solid ON confirmation after door open or pairing success (200-10000 ms).",
+        200,
+        10000,
+    ),
+    ParamSpec(
+        "DOORBELL_LED_ERR_DURATION_MS",
+        "Error duration (ms)",
+        "Status LED",
+        "int",
+        1000,
+        "Duration of fast-blink error indication (200-10000 ms).",
+        200,
+        10000,
+    ),
+    ParamSpec(
+        "DOORBELL_LED_NO_RESP_DURATION_MS",
+        "No-response duration (ms)",
+        "Status LED",
+        "int",
+        3000,
+        "Duration of medium-blink no-response indication (500-10000 ms).",
         500,
         10000,
     ),
 ]
+
+
+def _sync_params_from_kconfig(kconfig_path: Path, param_lists: List[List[ParamSpec]]) -> None:
+    """Parse Kconfig.projbuild and synchronize default, min_val, and max_val on all ParamSpec objects."""
+    if not kconfig_path.is_file():
+        return
+    try:
+        text = kconfig_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+
+    parsed: Dict[str, Dict[str, Any]] = {}
+    cur_entry: Optional[Dict[str, Any]] = None
+    in_help = False
+    help_indent = 0
+
+    for raw_line in text.splitlines():
+        expanded = raw_line.expandtabs(4)
+        stripped = expanded.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        if in_help:
+            if indent >= help_indent:
+                continue
+            in_help = False
+
+        m_cfg = re.match(r"^config\s+([A-Z0-9_]+)\b", stripped)
+        if m_cfg:
+            cur_entry = {"type": None, "default": None, "range": None}
+            parsed[m_cfg.group(1)] = cur_entry
+            continue
+
+        if stripped.startswith(("menu ", "endmenu", "choice ", "endchoice")):
+            cur_entry = None
+            continue
+
+        if cur_entry is None:
+            continue
+
+        m_type = re.match(r"^(int|bool|string)\b", stripped)
+        if m_type:
+            cur_entry["type"] = m_type.group(1)
+            continue
+
+        m_range = re.match(r"^range\s+(-?\d+)\s+(-?\d+)\b", stripped)
+        if m_range:
+            cur_entry["range"] = (int(m_range.group(1)), int(m_range.group(2)))
+            continue
+
+        m_def = re.match(r"^default\s+(.+)$", stripped)
+        if m_def:
+            val_s = m_def.group(1).strip()
+            ktype = cur_entry.get("type")
+            if ktype == "bool":
+                cur_entry["default"] = val_s == "y"
+            elif ktype == "int":
+                try:
+                    cur_entry["default"] = int(val_s)
+                except ValueError:
+                    pass
+            elif ktype == "string":
+                if val_s.startswith('"') and val_s.endswith('"') and len(val_s) >= 2:
+                    cur_entry["default"] = re.sub(r"\\(.)", r"\1", val_s[1:-1])
+                else:
+                    cur_entry["default"] = val_s
+            continue
+
+        if stripped == "help":
+            in_help = True
+            help_indent = indent + 1
+
+    for plist in param_lists:
+        for spec in plist:
+            meta = parsed.get(spec.kconfig)
+            if not meta:
+                continue
+            if meta["default"] is not None:
+                spec.default = meta["default"]
+            if meta["range"] is not None and spec.kind == "int":
+                spec.min_val, spec.max_val = meta["range"]
+
+
+_sync_params_from_kconfig(KCONFIG_PROJBUILD_PATH, [PANEL_PARAMS, APARTMENT_PARAMS])
 
 
 class ToolTip:
@@ -1056,6 +1201,8 @@ class SerialMonitorWindow(tk.Toplevel):
         self._stop_evt = threading.Event()
         self._ser: Optional[serial.Serial] = None
         self._rx_queue: queue.Queue[str] = queue.Queue()
+        self._redact_lock = threading.Lock()
+        self._redact_tokens: List[str] = []
 
         top_bar = ttk.Frame(self, padding=(8, 6))
         top_bar.pack(fill=tk.X)
@@ -1108,20 +1255,52 @@ class SerialMonitorWindow(tk.Toplevel):
             except serial.SerialException as exc:
                 self._append(f"\n[Error sending command: {exc}]\n")
 
+    @staticmethod
+    def _escape_console_arg(val: str) -> str:
+        return val.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _scrub_rx_text(self, text: str) -> str:
+        text = re.sub(
+            r"doorbell_wifi\s+[^\r\n]*",
+            "doorbell_wifi [credentials redacted]",
+            text,
+        )
+        with self._redact_lock:
+            tokens = list(self._redact_tokens)
+        for tok in tokens:
+            if tok and tok in text:
+                text = text.replace(tok, "[REDACTED]")
+        return text
+
     def _send_wifi(self) -> None:
         admin = self.admin_var.get().strip()
         ssid = self.ssid_var.get().strip()
         pw = self.pass_var.get()
-        if not admin.isdigit() or len(admin) < 8:
+        if not admin.isdigit() or not (8 <= len(admin) <= 10):
             messagebox.showerror("Invalid Admin Code", "Admin code must be 8-10 digits.", parent=self)
             return
-        if not ssid or len(ssid) > 32 or (pw and (len(pw) < 8 or len(pw) > 63)):
-            messagebox.showerror("Invalid Wi-Fi", "SSID must be 1-32 chars; password empty or 8-63 chars.", parent=self)
+        if any(ch in ssid or ch in pw for ch in ("\x00", "\r", "\n")):
+            messagebox.showerror("Invalid Wi-Fi", "SSID and password cannot contain control characters.", parent=self)
+            return
+        ssid_bytes = len(ssid.encode("utf-8"))
+        pw_bytes = len(pw.encode("utf-8"))
+        if ssid_bytes == 0 or ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
+            messagebox.showerror(
+                "Invalid Wi-Fi",
+                "SSID must be 1-32 UTF-8 bytes; password must be empty or 8-63 UTF-8 bytes.",
+                parent=self,
+            )
             return
         if self._ser and self._ser.is_open:
             try:
-                # Quote arguments if they contain spaces; never log admin code or password (I-25)
-                cmd = f'\r\ndoorbell_wifi "{admin}" "{ssid}" "{pw}"\r\n'
+                esc_ssid = self._escape_console_arg(ssid)
+                esc_pw = self._escape_console_arg(pw)
+                with self._redact_lock:
+                    for tok in (admin, pw, esc_pw):
+                        if tok and tok not in self._redact_tokens:
+                            self._redact_tokens.append(tok)
+                # Quote arguments and escape embedded quotes/backslashes; never log admin code or password (I-25)
+                cmd = f'\r\ndoorbell_wifi "{admin}" "{esc_ssid}" "{esc_pw}"\r\n'
                 self._ser.write(cmd.encode("utf-8"))
                 self._append(f"\n[Sent authenticated doorbell_wifi for SSID '{ssid}' (credentials redacted)]\n")
                 self.admin_var.set("")
@@ -1142,15 +1321,32 @@ class SerialMonitorWindow(tk.Toplevel):
 
     def _reader_thread(self) -> None:
         try:
-            self._ser = serial.Serial(self.port, baudrate=115200, timeout=0.1)
+            self._ser = serial.Serial(self.port, baudrate=115200, timeout=0.08)
             self._rx_queue.put(f"[Connected to {self.port} at 115200 baud]\n")
+            pending = ""
+            last_rx = time.monotonic()
             while not self._stop_evt.is_set():
                 data = self._ser.read(512)
                 if data:
-                    text = data.decode("utf-8", errors="replace")
+                    chunk = data.decode("utf-8", errors="replace")
                     # Strip ANSI escape codes for clean display
-                    text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
-                    self._rx_queue.put(text)
+                    chunk = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", chunk)
+                    pending += chunk
+                    last_rx = time.monotonic()
+                    if "\n" in pending:
+                        lines = pending.splitlines(keepends=True)
+                        if not lines[-1].endswith(("\n", "\r")):
+                            pending = lines.pop()
+                        else:
+                            pending = ""
+                        out = self._scrub_rx_text("".join(lines))
+                        if out:
+                            self._rx_queue.put(out)
+                elif pending and (time.monotonic() - last_rx) >= 0.15:
+                    out = self._scrub_rx_text(pending)
+                    pending = ""
+                    if out:
+                        self._rx_queue.put(out)
         except Exception as exc:
             self._rx_queue.put(f"\n[Serial port error on {self.port}: {exc}]\n")
         finally:
@@ -1316,12 +1512,17 @@ class DeviceCard(ttk.LabelFrame):
         self.refresh_firmware_list()
 
     def set_status(self, text: str, color: str = "#1b7e2b", progress: Optional[float] = None) -> None:
+        if not self.winfo_exists():
+            return
         self.status_lbl.configure(text=text, fg=color)
         if progress is not None:
             self.progress_var.set(progress)
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self.app.update_detect_button_state()
+        if not self.winfo_exists():
+            return
         state = tk.DISABLED if busy else tk.NORMAL
         for btn in (
             self.btn_flash,
@@ -1439,10 +1640,15 @@ class DeviceCard(ttk.LabelFrame):
             if user_code == admin_code:
                 messagebox.showerror("Invalid Codes", "User code and Admin code cannot be identical.")
                 return
-            if len(ssid) > 32 or (pw and (len(pw) < 8 or len(pw) > 63)):
+            if "\x00" in ssid or "\x00" in pw:
+                messagebox.showerror("Invalid Wi-Fi Credentials", "SSID and password cannot contain null bytes.")
+                return
+            ssid_bytes = len(ssid.encode("utf-8"))
+            pw_bytes = len(pw.encode("utf-8"))
+            if ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
                 messagebox.showerror(
                     "Invalid Wi-Fi Credentials",
-                    "Wi-Fi SSID must be 0-32 characters, and password must be empty or 8-63 characters.",
+                    "Wi-Fi SSID must be 0-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes.",
                 )
                 return
 
@@ -1613,7 +1819,11 @@ class DoorbellFlasherApp:
                 if spec.kind == "bool":
                     vars_map[spec.kconfig].set(raw == "y")
                 elif spec.kind == "str":
-                    vars_map[spec.kconfig].set(raw.strip('"'))
+                    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+                        inner = re.sub(r"\\(.)", r"\1", raw[1:-1])
+                    else:
+                        inner = raw
+                    vars_map[spec.kconfig].set(inner)
                 else:
                     vars_map[spec.kconfig].set(raw)
 
@@ -2045,10 +2255,24 @@ class DoorbellFlasherApp:
         try:
             while True:
                 fn = self._ui_queue.get_nowait()
-                fn()
+                try:
+                    fn()
+                except tk.TclError:
+                    # Widget may have been destroyed before the queued UI callback ran
+                    pass
+                except Exception as exc:
+                    sys.stderr.write(f"[UI Queue Error] {exc}\n")
         except queue.Empty:
             pass
-        self.root.after(40, self._process_ui_queue)
+        finally:
+            if self.root.winfo_exists():
+                self.root.after(40, self._process_ui_queue)
+
+    def update_detect_button_state(self) -> None:
+        if not hasattr(self, "btn_detect") or not self.btn_detect.winfo_exists():
+            return
+        any_busy = self._detecting or any(c._busy for c in self._device_cards)
+        self.btn_detect.configure(state=tk.DISABLED if any_busy else tk.NORMAL)
 
     def log(self, text: str) -> None:
         def _append() -> None:
@@ -2086,6 +2310,10 @@ class DoorbellFlasherApp:
         ).start()
 
     @staticmethod
+    def _escape_kconfig_str(val: Any) -> str:
+        return str(val).replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
     def _apply_kconfig_to_sdkconfig(sdkconfig_path: Path, specs: List[ParamSpec], values: Dict[str, Any]) -> None:
         """Update CONFIG_DOORBELL_* entries in sdkconfig in-place for fast incremental compilation."""
         lines = sdkconfig_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -2114,7 +2342,8 @@ class DoorbellFlasherApp:
                     else:
                         new_lines.append(f"# CONFIG_{matched_key} is not set")
                 elif spec.kind == "str":
-                    new_lines.append(f'CONFIG_{matched_key}="{val}"')
+                    escaped = DoorbellFlasherApp._escape_kconfig_str(val)
+                    new_lines.append(f'CONFIG_{matched_key}="{escaped}"')
                 else:
                     new_lines.append(f"CONFIG_{matched_key}={val}")
             else:
@@ -2129,7 +2358,8 @@ class DoorbellFlasherApp:
                     else:
                         new_lines.append(f"# CONFIG_{spec.kconfig} is not set")
                 elif spec.kind == "str":
-                    new_lines.append(f'CONFIG_{spec.kconfig}="{val}"')
+                    escaped = DoorbellFlasherApp._escape_kconfig_str(val)
+                    new_lines.append(f'CONFIG_{spec.kconfig}="{escaped}"')
                 else:
                     new_lines.append(f"CONFIG_{spec.kconfig}={val}")
 
@@ -2262,10 +2492,11 @@ class DoorbellFlasherApp:
         for line in proc.stdout:
             self.log(line)
             if progress_cb:
-                # Match esptool percentage "( 45 %)" or ninja "[12/25]"
-                m_pct = re.search(r"\(\s*(\d+)\s*%\)", line)
+                # Match esptool v5.6.0 percentage ("  45.2% 16.0kB/...") or esptool v4 ("( 45 %)")
+                m_pct = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
                 if m_pct:
-                    progress_cb(float(m_pct.group(1)))
+                    pct_val = max(0.0, min(100.0, float(m_pct.group(1))))
+                    progress_cb(pct_val)
         return proc.wait()
 
     # ---- Right Column: Port Detection & Device Operations ----
@@ -2273,8 +2504,14 @@ class DoorbellFlasherApp:
     def detect_ports(self) -> None:
         if self._detecting:
             return
+        if any(c._busy for c in self._device_cards):
+            messagebox.showwarning(
+                "Device Operation in Progress",
+                "Cannot re-detect COM ports while a device is flashing or busy. Please wait for the operation to finish.",
+            )
+            return
         self._detecting = True
-        self.btn_detect.configure(state=tk.DISABLED)
+        self.update_detect_button_state()
 
         for card in self._device_cards:
             card._close_monitor_if_open()
@@ -2290,7 +2527,7 @@ class DoorbellFlasherApp:
             )
             lbl.pack(anchor=tk.W, pady=8)
             self._detecting = False
-            self.btn_detect.configure(state=tk.NORMAL)
+            self.update_detect_button_state()
             self.log("[Detect] No COM ports found.\n")
             return
 
@@ -2310,13 +2547,28 @@ class DoorbellFlasherApp:
     def _worker_probe_ports(self, cards: List[DeviceCard]) -> None:
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        probe_script = (
+            "import sys\n"
+            "from esptool.cmds import detect_chip\n"
+            "port = sys.argv[1]\n"
+            "with detect_chip(port=port, connect_attempts=2) as esp:\n"
+            "    desc = esp.get_chip_description()\n"
+            "    mac = esp.read_mac('BASE_MAC') or esp.read_mac()\n"
+            "    mac_s = ':'.join(f'{b:02x}' for b in mac)\n"
+            "    sb_fn = getattr(esp, 'get_secure_boot_enabled', None)\n"
+            "    fe_fn = getattr(esp, 'get_flash_encryption_enabled', None)\n"
+            "    sb = bool(sb_fn()) if callable(sb_fn) else False\n"
+            "    fe = bool(fe_fn()) if callable(fe_fn) else False\n"
+            "    esp.hard_reset()\n"
+            "    print(f'PROBE_INFO|{desc}|{mac_s}|{\"on\" if sb else \"off\"}|{\"on\" if fe else \"off\"}')\n"
+        )
 
         for card in cards:
             port = card.port
             self.log(f"[{port}] Probing ESP32 via esptool...\n")
             try:
                 proc = subprocess.run(
-                    [python_exe, "-m", "esptool", "--port", port, "--connect-attempts", "2", "flash-id"],
+                    [python_exe, "-c", probe_script, port],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -2325,30 +2577,49 @@ class DoorbellFlasherApp:
                     creationflags=creationflags,
                 )
                 out = (proc.stdout or "") + (proc.stderr or "")
-                chip_m = re.search(r"Chip is ([^\r\n]+)", out)
+                probe_m = re.search(r"PROBE_INFO\|([^|]+)\|([^|]+)\|([^|]+)\|([^\r\n]+)", out)
+                chip_m = re.search(r"Chip (?:type:|is)\s*([^\r\n]+)", out)
                 mac_m = re.search(r"MAC:\s*([0-9a-fA-F:]{17})", out)
 
-                if chip_m and mac_m:
+                if probe_m:
+                    chip_str = probe_m.group(1).strip()
+                    mac_str = probe_m.group(2).strip().lower()
+                    sb_str = probe_m.group(3).strip()
+                    fe_str = probe_m.group(4).strip()
+                    info_line = (
+                        f"{chip_str} | MAC {mac_str} | "
+                        f"secure boot {sb_str} | flash encryption {fe_str}"
+                    )
+                    self.log(f"[{port}] {info_line}\n")
+                    if "Hard resetting via RTS pin..." in out:
+                        self.log(f"[{port}] Hard resetting via RTS pin...\n")
+                    self.post_ui(lambda c=card, s=info_line: c.chip_info_var.set(s) if c.winfo_exists() else None)
+                    self.post_ui(lambda c=card: c.set_status("Detect done", "#1b7e2b", 0.0))
+                elif chip_m and mac_m:
                     chip_str = chip_m.group(1).strip()
                     mac_str = mac_m.group(1).lower()
                     info_line = f"{chip_str} | MAC {mac_str} | secure boot off | flash encryption off"
                     self.log(f"[{port}] {info_line}\n")
-                    self.post_ui(lambda c=card, s=info_line: c.chip_info_var.set(s))
+                    self.post_ui(lambda c=card, s=info_line: c.chip_info_var.set(s) if c.winfo_exists() else None)
                     self.post_ui(lambda c=card: c.set_status("Detect done", "#1b7e2b", 0.0))
                 else:
                     self.log(f"[{port}] Could not read ESP32 bootloader response.\n")
                     self.post_ui(
-                        lambda c=card: c.chip_info_var.set("No ESP32 response (check USB cable or hold BOOT)")
+                        lambda c=card: (
+                            c.chip_info_var.set("No ESP32 response (check USB cable or hold BOOT)")
+                            if c.winfo_exists()
+                            else None
+                        )
                     )
                     self.post_ui(lambda c=card: c.set_status("No response", "#b33a3a", 0.0))
             except Exception as exc:
                 self.log(f"[{port}] Probe error: {exc}\n")
-                self.post_ui(lambda c=card, e=exc: c.chip_info_var.set(f"Probe failed: {e}"))
+                self.post_ui(lambda c=card, e=exc: c.chip_info_var.set(f"Probe failed: {e}") if c.winfo_exists() else None)
                 self.post_ui(lambda c=card: c.set_status("Error", "#b33a3a", 0.0))
 
         def _finish() -> None:
             self._detecting = False
-            self.btn_detect.configure(state=tk.NORMAL)
+            self.update_detect_button_state()
 
         self.post_ui(_finish)
 
@@ -2629,3 +2900,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
