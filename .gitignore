@@ -1,0 +1,26 @@
+# ESP-IDF build artifacts and generated sdkconfig
+build/
+**/build/
+sdkconfig
+**/sdkconfig
+sdkconfig.old
+**/sdkconfig.old
+managed_components/
+**/managed_components/
+
+# Keep sdkconfig.defaults and dependencies.lock tracked
+!sdkconfig.defaults
+!**/sdkconfig.defaults
+!dependencies.lock
+!**/dependencies.lock
+
+# OS, Python & editor files
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+

@@ -1,0 +1,4 @@
+dependencies:
+  idf: ">=6.1.0"
+  espressif/led_indicator: "^2.1.2"
+
