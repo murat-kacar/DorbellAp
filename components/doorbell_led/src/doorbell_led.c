@@ -191,6 +191,11 @@ void doorbell_led_panel_start(doorbell_panel_led_state_t state)
 void doorbell_led_panel_stop(doorbell_panel_led_state_t state)
 {
     if (s_panel_led && state < LED_PANEL_MAX) {
+        if (state == LED_PANEL_RESULT_ERR) {
+            esp_timer_stop(s_panel_err_timer);
+        } else if (state == LED_PANEL_NO_RESPONSE) {
+            esp_timer_stop(s_panel_no_resp_timer);
+        }
         led_indicator_stop(s_panel_led, state);
     }
 }
@@ -339,6 +344,9 @@ void doorbell_led_unit_start(doorbell_unit_led_state_t state)
 void doorbell_led_unit_stop(doorbell_unit_led_state_t state)
 {
     if (s_unit_led && state < LED_UNIT_MAX) {
+        if (state == LED_UNIT_NO_RESPONSE) {
+            esp_timer_stop(s_unit_no_resp_timer);
+        }
         led_indicator_stop(s_unit_led, state);
     }
 }

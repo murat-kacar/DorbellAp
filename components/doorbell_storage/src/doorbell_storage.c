@@ -134,12 +134,19 @@ esp_err_t doorbell_storage_panel_reset_codes_to_factory(doorbell_panel_cfg_blob_
     if (!cfg) {
         return ESP_ERR_INVALID_ARG;
     }
-    memcpy(cfg->admin_code, cfg->factory_admin_code, sizeof(cfg->admin_code));
-    memcpy(cfg->user_code, cfg->factory_user_code, sizeof(cfg->user_code));
-    cfg->wrong_code_count = 0;
-    cfg->lockout_level = 0;
-    cfg->lockout_remaining_s = 0;
-    return doorbell_storage_panel_save_cfg(cfg);
+    /* Commit to NVS first, then to the caller's copy: a failed save leaves the active codes unchanged */
+    doorbell_panel_cfg_blob_t next = *cfg;
+    memcpy(next.admin_code, next.factory_admin_code, sizeof(next.admin_code));
+    memcpy(next.user_code, next.factory_user_code, sizeof(next.user_code));
+    next.wrong_code_count = 0;
+    next.lockout_level = 0;
+    next.lockout_remaining_s = 0;
+    esp_err_t err = doorbell_storage_panel_save_cfg(&next);
+    if (err == ESP_OK) {
+        *cfg = next;
+    }
+    memset(&next, 0, sizeof(next));
+    return err;
 }
 
 static void format_apt_key(uint8_t apt_no, char out_key[12])

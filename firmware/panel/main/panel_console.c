@@ -81,12 +81,18 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         return 1;
     }
 
+    /* Commit to NVS first, then to RAM: a failed save must leave the active credentials unchanged */
     xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
-    memset(g_panel_cfg.wifi_ssid, 0, sizeof(g_panel_cfg.wifi_ssid));
-    memset(g_panel_cfg.wifi_pass, 0, sizeof(g_panel_cfg.wifi_pass));
-    strncpy(g_panel_cfg.wifi_ssid, new_ssid, sizeof(g_panel_cfg.wifi_ssid) - 1);
-    strncpy(g_panel_cfg.wifi_pass, new_pass, sizeof(g_panel_cfg.wifi_pass) - 1);
-    esp_err_t err = doorbell_storage_panel_save_cfg(&g_panel_cfg);
+    doorbell_panel_cfg_blob_t next = g_panel_cfg;
+    memset(next.wifi_ssid, 0, sizeof(next.wifi_ssid));
+    memset(next.wifi_pass, 0, sizeof(next.wifi_pass));
+    strncpy(next.wifi_ssid, new_ssid, sizeof(next.wifi_ssid) - 1);
+    strncpy(next.wifi_pass, new_pass, sizeof(next.wifi_pass) - 1);
+    esp_err_t err = doorbell_storage_panel_save_cfg(&next);
+    if (err == ESP_OK) {
+        g_panel_cfg = next;
+    }
+    memset(&next, 0, sizeof(next));
     xSemaphoreGive(g_panel_mutex);
 
     if (err != ESP_OK) {

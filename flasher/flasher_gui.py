@@ -1588,6 +1588,7 @@ class DeviceCard(ttk.LabelFrame):
         self.fw_var = tk.StringVar()
         self.fw_cb = ttk.Combobox(row_fw, textvariable=self.fw_var, width=32)
         self.fw_cb.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.fw_cb.bind("<<ComboboxSelected>>", lambda _e: self._sync_code_lengths_to_firmware())
 
         self.browse_btn = ttk.Button(row_fw, text="Browse...", width=9, command=self._on_browse)
         self.browse_btn.pack(side=tk.LEFT)
@@ -1607,7 +1608,7 @@ class DeviceCard(ttk.LabelFrame):
             row_codes,
             text="Random",
             width=8,
-            command=lambda: self.admin_code_var.set(generate_random_digits(self.app.get_configured_admin_len())),
+            command=lambda: self.admin_code_var.set(generate_random_digits(self._required_code_lengths()[0])),
         )
         self.rand_admin_btn.pack(side=tk.LEFT, padx=(0, 14))
 
@@ -1619,7 +1620,7 @@ class DeviceCard(ttk.LabelFrame):
             row_codes,
             text="Random",
             width=8,
-            command=lambda: self.user_code_var.set(generate_random_digits(self.app.get_configured_user_len())),
+            command=lambda: self.user_code_var.set(generate_random_digits(self._required_code_lengths()[1])),
         )
         self.rand_user_btn.pack(side=tk.LEFT)
 
@@ -1720,12 +1721,12 @@ class DeviceCard(ttk.LabelFrame):
 
         role = self.role_var.get()
         prefix = "panel_" if role == "panel" else "apartment_"
-        for name in names:
-            if name.startswith(prefix):
-                self.fw_var.set(name)
-                return
-        if names and not self.fw_var.get():
+        selected = next((n for n in names if n.startswith(prefix)), None)
+        if selected:
+            self.fw_var.set(selected)
+        elif names and not self.fw_var.get():
             self.fw_var.set(names[0])
+        self._sync_code_lengths_to_firmware()
 
     def _on_browse(self) -> None:
         initial = str(BUILDS_DIR if BUILDS_DIR.is_dir() else PROJECT_ROOT)
@@ -1737,6 +1738,7 @@ class DeviceCard(ttk.LabelFrame):
         )
         if path:
             self.fw_var.set(path)
+            self._sync_code_lengths_to_firmware()
 
     def _resolve_fw_path(self) -> Optional[Path]:
         raw = self.fw_var.get().strip()
@@ -1786,6 +1788,16 @@ class DeviceCard(ttk.LabelFrame):
             args=(self, fw_path, layout),
             daemon=True,
         ).start()
+
+    def _sync_code_lengths_to_firmware(self) -> None:
+        """Regenerate a code whose length does not match the firmware now selected on this card."""
+        if self.role_var.get() != "panel":
+            return
+        admin_len, user_len, _src = self._required_code_lengths()
+        if len(self.admin_code_var.get().strip()) != admin_len:
+            self.admin_code_var.set(generate_random_digits(admin_len))
+        if len(self.user_code_var.get().strip()) != user_len:
+            self.user_code_var.set(generate_random_digits(user_len))
 
     def _required_code_lengths(self) -> Tuple[int, int, str]:
         """Admin/user code lengths of the firmware selected on this card (from its build-info sidecar).

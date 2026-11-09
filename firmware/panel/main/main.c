@@ -49,6 +49,9 @@ static volatile bool s_pending_building_reset = false;
 static volatile bool s_pending_code_reset = false;
 
 static uint16_t s_panel_next_seq_id = 1;
+/* panel_cfg could not be loaded at boot: keypad codes are disabled until re-provisioned (fail closed, I-5) */
+static bool s_panel_cfg_fault = false;
+static uint32_t s_cfg_fault_led_divider = 0;
 static uint32_t s_unregistered_packets = 0;
 static uint32_t s_rejected_messages = 0;
 /* Two-phase pairing server state (I-26, I-27, I-30, I-45) */
@@ -316,9 +319,11 @@ static void execute_pending_panel_actions(void)
             panel_portal_stop();
         }
         esp_err_t err = doorbell_storage_panel_reset_codes_to_factory(&g_panel_cfg);
-        /* The storage call zeroes the persisted lockout counters; also drop the running in-RAM lockout, otherwise
-         * the restored factory codes stay rejected and the 1 s tick writes the remaining time back to NVS */
-        panel_lockout_clear_locked();
+        /* On success the storage call zeroed the persisted lockout counters; also drop the running in-RAM lockout,
+         * otherwise the restored factory codes stay rejected and the 1 s tick writes the remaining time back to NVS */
+        if (err == ESP_OK) {
+            panel_lockout_clear_locked();
+        }
         xSemaphoreGive(g_panel_mutex);
 
         if (err == ESP_OK) {
@@ -1150,6 +1155,11 @@ static void panel_worker_task(void *arg)
             panel_lockout_tick_1s();
             panel_portal_tick();
             check_module_health_1s();
+            /* Persistent storage-fault indication (I-13): repeat the error pattern every 10 s */
+            if (s_panel_cfg_fault && (++s_cfg_fault_led_divider >= 10)) {
+                s_cfg_fault_led_divider = 0;
+                doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+            }
         }
 
         if (g_panel_mode == MODE_PAIR_DISCOVER || g_panel_mode == MODE_PAIR_COMPLETE) {
@@ -1209,15 +1219,13 @@ void app_main(void)
          * keypad. Run with in-RAM Kconfig defaults; nothing is erased at boot (I-13). doorbell_storage refuses to save
          * panel_cfg in this state, so the stored record (with its unique factory codes, I-5) is never overwritten by
          * the shared defaults; recovery is a full re-provision with Flash NVS (I-14). */
-        ESP_LOGE(TAG, "CRITICAL: panel_cfg unreadable (%s) — running with in-RAM defaults, stored blob left intact",
-                 esp_err_to_name(cfg_err));
+        ESP_LOGE(TAG, "CRITICAL: panel_cfg unreadable (%s) — keypad codes disabled, stored blob left intact; "
+                      "re-provision with Flash NVS", esp_err_to_name(cfg_err));
+        /* Fail closed (I-5): do NOT fall back to the shared built-in codes, or anyone knowing them could open the door
+         * or run building reset. Admin/user/factory codes stay empty, so ct_equal_code() rejects every keypad and
+         * console code. Visitors can still ring, and residents can still open the door from their modules. */
         memset(&g_panel_cfg, 0, sizeof(g_panel_cfg));
-        strncpy(g_panel_cfg.admin_code, CONFIG_DOORBELL_PANEL_DEFAULT_ADMIN_CODE, sizeof(g_panel_cfg.admin_code) - 1);
-        strncpy(g_panel_cfg.user_code, CONFIG_DOORBELL_PANEL_DEFAULT_USER_CODE, sizeof(g_panel_cfg.user_code) - 1);
-        strncpy(g_panel_cfg.factory_admin_code, CONFIG_DOORBELL_PANEL_DEFAULT_ADMIN_CODE,
-                sizeof(g_panel_cfg.factory_admin_code) - 1);
-        strncpy(g_panel_cfg.factory_user_code, CONFIG_DOORBELL_PANEL_DEFAULT_USER_CODE,
-                sizeof(g_panel_cfg.factory_user_code) - 1);
+        s_panel_cfg_fault = true;
         strncpy(g_panel_cfg.wifi_ssid, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_SSID, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_PASS, sizeof(g_panel_cfg.wifi_pass) - 1);
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);

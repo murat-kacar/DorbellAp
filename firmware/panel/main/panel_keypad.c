@@ -390,14 +390,18 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
                 return;
             }
-            memset(g_panel_cfg.user_code, 0, sizeof(g_panel_cfg.user_code));
-            memcpy(g_panel_cfg.user_code, tok[2], CONFIG_DOORBELL_PANEL_USER_CODE_LEN);
-            if (doorbell_storage_panel_save_cfg(&g_panel_cfg) == ESP_OK) {
+            /* Commit to NVS first, then to RAM: a failed save must leave the active code unchanged */
+            doorbell_panel_cfg_blob_t next = g_panel_cfg;
+            memset(next.user_code, 0, sizeof(next.user_code));
+            memcpy(next.user_code, tok[2], CONFIG_DOORBELL_PANEL_USER_CODE_LEN);
+            if (doorbell_storage_panel_save_cfg(&next) == ESP_OK) {
+                g_panel_cfg = next;
                 ESP_LOGI(TAG, "User door-open code updated via keypad");
                 doorbell_led_panel_start(LED_PANEL_RESULT_OK);
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
+            memset(&next, 0, sizeof(next));
             break;
         }
         case '4': {
@@ -406,14 +410,18 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
                 return;
             }
-            memset(g_panel_cfg.admin_code, 0, sizeof(g_panel_cfg.admin_code));
-            memcpy(g_panel_cfg.admin_code, tok[2], CONFIG_DOORBELL_PANEL_ADMIN_CODE_LEN);
-            if (doorbell_storage_panel_save_cfg(&g_panel_cfg) == ESP_OK) {
+            /* Commit to NVS first, then to RAM: a failed save must leave the active code unchanged */
+            doorbell_panel_cfg_blob_t next = g_panel_cfg;
+            memset(next.admin_code, 0, sizeof(next.admin_code));
+            memcpy(next.admin_code, tok[2], CONFIG_DOORBELL_PANEL_ADMIN_CODE_LEN);
+            if (doorbell_storage_panel_save_cfg(&next) == ESP_OK) {
+                g_panel_cfg = next;
                 ESP_LOGI(TAG, "Admin code updated via keypad");
                 doorbell_led_panel_start(LED_PANEL_RESULT_OK);
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
+            memset(&next, 0, sizeof(next));
             break;
         }
         case '5':
