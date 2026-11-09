@@ -1891,6 +1891,7 @@ class DoorbellFlasherApp:
         self._building = False
         self._detecting = False
         self._device_cards: List[DeviceCard] = []
+        self._idf_export_vars: Optional[Dict[str, str]] = None  # ESP-IDF activation env, queried on first build
 
         # Store Tkinter variables for Panel and Apartment Kconfig parameters
         self.panel_vars: Dict[str, tk.Variable] = {}
@@ -2490,24 +2491,81 @@ class DoorbellFlasherApp:
 
         sdkconfig_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
-    def _build_idf_env(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        idf_path = Path(env.get("IDF_PATH", str(IDF_PATH_DEFAULT)))
-        env["IDF_PATH"] = str(idf_path)
-        env["IDF_TOOLS_PATH"] = env.get("IDF_TOOLS_PATH", str(IDF_TOOLS_PATH_DEFAULT))
-        env["IDF_PYTHON_ENV_PATH"] = str(IDF_VENV_PYTHON.parent.parent)
-        env["PYTHONUTF8"] = "1"
+    @staticmethod
+    def _parse_key_value_env(text: str) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for line in text.splitlines():
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line.strip())
+            if m:
+                result[m.group(1)] = m.group(2)
+        return result
 
-        # Prepend ESP-IDF toolchains, cmake, ninja, ccache, and venv Scripts to PATH
-        extra_paths: List[str] = [str(IDF_VENV_PYTHON.parent)]
-        tools_root = Path(env["IDF_TOOLS_PATH"]) / "tools"
-        if tools_root.is_dir():
-            for bin_dir in tools_root.glob("*/*/bin"):
-                extra_paths.append(str(bin_dir))
-            for top_dir in tools_root.glob("*/*"):
-                if (top_dir / "ninja.exe").is_file() or (top_dir / "ccache.exe").is_file():
-                    extra_paths.append(str(top_dir))
-        env["PATH"] = os.pathsep.join(extra_paths + [env.get("PATH", "")])
+    def _query_idf_export_vars(self) -> Dict[str, str]:
+        """Ask the installed ESP-IDF for its activation environment instead of guessing tool paths.
+
+        1. EIM install: `<IDF_TOOLS_PATH>/Microsoft.v6.1.PowerShell_profile.ps1 -e` prints KEY=VALUE pairs.
+        2. Classic install: `idf_tools.py export --format key-value`, plus ESP_IDF_VERSION from
+           tools/cmake/version.cmake (what export.ps1 / activate.py set).
+        """
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        tools_path = Path(os.environ.get("IDF_TOOLS_PATH", str(IDF_TOOLS_PATH_DEFAULT)))
+        idf_path = Path(os.environ.get("IDF_PATH", str(IDF_PATH_DEFAULT)))
+
+        eim_profile = tools_path / "Microsoft.v6.1.PowerShell_profile.ps1"
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        if eim_profile.is_file() and shell:
+            proc = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(eim_profile), "-e"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                creationflags=creationflags,
+            )
+            exported = self._parse_key_value_env(proc.stdout)
+            if proc.returncode == 0 and exported.get("ESP_IDF_VERSION") and exported.get("PATH"):
+                exported.pop("SYSTEM_PATH", None)  # EIM's snapshot of the system PATH; keep the live one
+                return exported
+            self.log(f"[Build] EIM profile export failed (code {proc.returncode}); trying idf_tools.py export.\n")
+
+        python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
+        base_env = dict(os.environ, IDF_PATH=str(idf_path), IDF_TOOLS_PATH=str(tools_path))
+        proc = subprocess.run(
+            [python_exe, str(idf_path / "tools" / "idf_tools.py"), "export", "--format", "key-value"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=base_env,
+            creationflags=creationflags,
+        )
+        exported = self._parse_key_value_env(proc.stdout)
+        if proc.returncode != 0 or not exported.get("PATH"):
+            raise RuntimeError(
+                "Cannot obtain the ESP-IDF environment (no EIM profile and idf_tools.py export failed):\n"
+                + (proc.stdout + proc.stderr).strip()
+            )
+        # key-value PATH ends with a reference to the caller's PATH; it is re-appended below
+        exported["PATH"] = re.sub(r"[;:]?(%PATH%|\$PATH)$", "", exported["PATH"])
+        version_txt = (idf_path / "tools" / "cmake" / "version.cmake").read_text(encoding="utf-8")
+        ver = {k: v for k, v in re.findall(r"set\(IDF_VERSION_(MAJOR|MINOR|PATCH)\s+(\d+)\)", version_txt)}
+        exported.setdefault("IDF_PATH", str(idf_path))
+        exported["ESP_IDF_VERSION"] = f"{ver['MAJOR']}.{ver['MINOR']}"
+        exported["IDF_VERSION"] = f"{ver['MAJOR']}.{ver['MINOR']}.{ver.get('PATCH', '0')}"
+        return exported
+
+    def _build_idf_env(self) -> Dict[str, str]:
+        if self._idf_export_vars is None:
+            self._idf_export_vars = self._query_idf_export_vars()
+        exported = dict(self._idf_export_vars)
+        env = os.environ.copy()
+        tool_paths = exported.pop("PATH")
+        env.update(exported)
+        env.setdefault("IDF_PYTHON_ENV_PATH", str(IDF_VENV_PYTHON.parent.parent))
+        env["PYTHONUTF8"] = "1"
+        env["PATH"] = os.pathsep.join([tool_paths, str(IDF_VENV_PYTHON.parent), env.get("PATH", "")])
         return env
 
     def _worker_build_firmware(self, role: str, values: Dict[str, Any]) -> None:
