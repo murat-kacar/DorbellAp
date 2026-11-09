@@ -20,8 +20,9 @@
 
 static const char *TAG = "doorbell_net";
 
-#define NET_BIT_CONNECTED BIT0
-#define NET_BIT_FAIL      BIT1
+#define NET_BIT_CONNECTED  BIT0
+#define NET_BIT_FAIL       BIT1
+#define NET_BIT_AP_STARTED BIT2 /* SoftAP running; its lwIP netif is added and up (set after esp_netif's own handler) */
 
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif  = NULL;
@@ -93,6 +94,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 s_state_cb(false, 0, s_state_cb_ctx);
             }
             schedule_reconnect();
+        } else if (event_id == WIFI_EVENT_AP_START) {
+            /* esp_netif_create_default_wifi_ap() registered its AP_START handler (which adds and raises the lwIP
+             * netif) before ours, so by now the SoftAP netif has its final name and index */
+            if (s_net_evt) {
+                xEventGroupSetBits(s_net_evt, NET_BIT_AP_STARTED);
+            }
+        } else if (event_id == WIFI_EVENT_AP_STOP) {
+            if (s_net_evt) {
+                xEventGroupClearBits(s_net_evt, NET_BIT_AP_STARTED);
+            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -413,12 +424,22 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
 
+    xEventGroupClearBits(s_net_evt, NET_BIT_AP_STARTED);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     apply_sta_protocol();
     esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     memset(&ap_cfg, 0, sizeof(ap_cfg));
     if (err != ESP_OK) {
         return err;
+    }
+
+    /* Callers bind sockets to this netif (SO_BINDTODEVICE, I-27/I-47) right after we return, so wait until the
+     * SoftAP has started and its netif exists. Bounded well below the 5 s TWDT (I-46). */
+    EventBits_t bits = xEventGroupWaitBits(s_net_evt, NET_BIT_AP_STARTED, pdFALSE, pdTRUE, pdMS_TO_TICKS(2000));
+    if (!(bits & NET_BIT_AP_STARTED) || !esp_netif_is_netif_up(s_ap_netif)) {
+        ESP_LOGE(TAG, "SoftAP '%s' did not start within 2 s", ssid);
+        doorbell_net_stop_softap();
+        return ESP_ERR_TIMEOUT;
     }
 
     ESP_LOGI(TAG, "Started SoftAP '%s' on channel %u (IP " IPSTR ")",
@@ -565,6 +586,34 @@ int doorbell_udp_socket_create(uint16_t port, uint32_t bind_ipv4_host, uint32_t 
     }
 
     return sock;
+}
+
+esp_err_t doorbell_net_get_softap_if_name(char out_name[6])
+{
+    if (!s_ap_netif || !out_name || !esp_netif_is_netif_up(s_ap_netif)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    out_name[0] = '\0';
+    esp_err_t err = esp_netif_get_netif_impl_name(s_ap_netif, out_name);
+    if (err == ESP_OK && out_name[0] == '\0') {
+        /* An empty name would make SO_BINDTODEVICE unbind and httpd skip binding: fail closed instead */
+        err = ESP_ERR_INVALID_STATE;
+    }
+    return err;
+}
+
+esp_err_t doorbell_net_bind_socket_to_softap(int sock)
+{
+    struct ifreq ifr = {0};
+    esp_err_t err = doorbell_net_get_softap_if_name(ifr.ifr_name);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
+        ESP_LOGE(TAG, "SO_BINDTODEVICE(%s) failed: errno=%d", ifr.ifr_name, errno);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 esp_err_t doorbell_udp_send_direct(int sock,

@@ -63,6 +63,8 @@ esp_err_t panel_keypad_init(void);
 /* Drains queued key presses; must be called from panel_worker_task (never from a button/esp_timer callback) */
 void panel_keypad_process(void);
 void panel_lockout_tick_1s(void);
+/** Clear the active in-RAM keypad lockout (deadline + LED). Caller holds g_panel_mutex. */
+void panel_lockout_clear_locked(void);
 bool panel_is_locked_out(void);
 bool panel_verify_admin_code_ct(const char *candidate);
 

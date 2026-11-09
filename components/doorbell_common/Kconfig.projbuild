@@ -63,11 +63,12 @@ menu "Doorbell System Configuration"
 
         config DOORBELL_PAIRING_COMPLETE_TIMEOUT_S
             int "Pairing completion timeout (s)"
-            range 5 60
+            range 6 60
             default 10
             help
                 Additional seconds allowed after SoftAP provisioning for the apartment module to join the building AP,
                 obtain a DHCP lease, and send authenticated PAIR_COMPLETE over the LAN.
+                Must be at least 5 s (LAN join) + 4 x ACK timeout + 0.5 s; checked at compile time.
 
         config DOORBELL_NVS_COUNTER_BLOCK
             int "Replay counter NVS block size"

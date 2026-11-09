@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
+#include "doorbell_twdt.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "mbedtls/constant_time.h"
@@ -62,17 +63,6 @@ static volatile bool s_combo_cancelled = false;
 
 static doorbell_relay_t s_bell_relay = {0};
 static doorbell_x25519_ctx_t s_pregen_x25519 = {0};
-static esp_task_wdt_user_handle_t s_timer_wdt_user = NULL;
-static esp_timer_handle_t s_wdt_periodic_timer = NULL;
-
-static void timer_wdt_feed_cb(void *arg)
-{
-    (void)arg;
-    if (s_timer_wdt_user) {
-        esp_task_wdt_reset_user(s_timer_wdt_user);
-    }
-}
-
 static void on_bell_relay_off(void *ctx)
 {
     (void)ctx;
@@ -303,8 +293,8 @@ static void reset_btn_up_cb(void *button_handle, void *usr_data)
 
 static esp_err_t init_unit_buttons(void)
 {
-    int active_level = CONFIG_DOORBELL_UNIT_BTNS_ACTIVE_LOW ? 0 : 1;
-    bool disable_pull = !CONFIG_DOORBELL_UNIT_BTNS_INTERNAL_PULL;
+    int active_level = DOORBELL_UNIT_BTNS_ACTIVE_LOW ? 0 : 1;
+    bool disable_pull = !DOORBELL_UNIT_BTNS_INTERNAL_PULL;
 
     /* 1. Door-open button (GPIO 23) */
     button_config_t door_btn_cfg = {0};
@@ -1174,7 +1164,7 @@ void app_main(void)
     /* 1. Boot-safe Bell Relay initialization BEFORE any other peripheral (I-22) */
     ESP_ERROR_CHECK(doorbell_relay_init(&s_bell_relay,
                                         CONFIG_DOORBELL_UNIT_GPIO_BELL_RELAY,
-                                        CONFIG_DOORBELL_UNIT_BELL_RELAY_ACTIVE_HIGH,
+                                        DOORBELL_UNIT_BELL_RELAY_ACTIVE_HIGH,
                                         CONFIG_DOORBELL_UNIT_BELL_PULSE_MS,
                                         &on_bell_relay_off,
                                         NULL));
@@ -1223,14 +1213,8 @@ void app_main(void)
     /* 5. Buttons initialization */
     ESP_ERROR_CHECK(init_unit_buttons());
 
-    /* 6. Register esp_timer pipeline health handle with TWDT (I-46) */
-    ESP_ERROR_CHECK(esp_task_wdt_add_user("unit_esp_timer", &s_timer_wdt_user));
-    const esp_timer_create_args_t wdt_timer_args = {
-        .callback = &timer_wdt_feed_cb,
-        .name = "unit_wdt_tmr",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&wdt_timer_args, &s_wdt_periodic_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(s_wdt_periodic_timer, 1000000ULL));
+    /* 6. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT (I-46) */
+    ESP_ERROR_CHECK(doorbell_twdt_register_timer_pipelines("unit_esp_timer", "unit_rtos_timer"));
 
     /* 7. Start TWDT-monitored UDP worker task */
     xTaskCreate(unit_worker_task, "unit_worker", 6144, NULL, 5, NULL);

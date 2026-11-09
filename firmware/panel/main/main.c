@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "esp_task_wdt.h"
+#include "doorbell_twdt.h"
 #include "esp_rom_crc.h"
 #include "esp_attr.h"
 #include "esp_log.h"
@@ -50,17 +51,6 @@ static volatile bool s_pending_code_reset = false;
 static uint16_t s_panel_next_seq_id = 1;
 static uint32_t s_unregistered_packets = 0;
 static uint32_t s_rejected_messages = 0;
-static esp_task_wdt_user_handle_t s_panel_timer_wdt_user = NULL;
-static esp_timer_handle_t s_panel_wdt_periodic_timer = NULL;
-
-static void panel_timer_wdt_feed_cb(void *arg)
-{
-    (void)arg;
-    if (s_panel_timer_wdt_user) {
-        esp_task_wdt_reset_user(s_panel_timer_wdt_user);
-    }
-}
-
 /* Two-phase pairing server state (I-26, I-27, I-30, I-45) */
 typedef struct {
     uint8_t apt_no;
@@ -221,8 +211,13 @@ static void execute_start_pairing_locked(uint8_t apt_no)
         return;
     }
 
-    /* Bind pairing listener strictly to SoftAP IPv4 address (I-27) */
+    /* Bind pairing listener strictly to the SoftAP: its IPv4 address AND its netif (SO_BINDTODEVICE), since lwIP's
+     * weak host model would otherwise accept datagrams for the SoftAP address arriving from the building LAN (I-27) */
     int pair_sock = doorbell_udp_socket_create(CONFIG_DOORBELL_UDP_PORT, softap_ip, 50);
+    if (pair_sock >= 0 && doorbell_net_bind_socket_to_softap(pair_sock) != ESP_OK) {
+        close(pair_sock);
+        pair_sock = -1;
+    }
     if (pair_sock < 0) {
         doorbell_net_stop_softap();
         doorbell_net_set_sta_reconnect_paused(false);
@@ -321,6 +316,9 @@ static void execute_pending_panel_actions(void)
             panel_portal_stop();
         }
         esp_err_t err = doorbell_storage_panel_reset_codes_to_factory(&g_panel_cfg);
+        /* The storage call zeroes the persisted lockout counters; also drop the running in-RAM lockout, otherwise
+         * the restored factory codes stay rejected and the 1 s tick writes the remaining time back to NVS */
+        panel_lockout_clear_locked();
         xSemaphoreGive(g_panel_mutex);
 
         if (err == ESP_OK) {
@@ -1186,7 +1184,7 @@ void app_main(void)
     /* 1. Boot-safe Door Relay initialization BEFORE any other peripheral (I-22) */
     ESP_ERROR_CHECK(doorbell_relay_init(&g_door_relay,
                                         CONFIG_DOORBELL_PANEL_GPIO_DOOR_RELAY,
-                                        !CONFIG_DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW,
+                                        !DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW,
                                         CONFIG_DOORBELL_PANEL_DOOR_PULSE_MS,
                                         &on_door_relay_off,
                                         NULL));
@@ -1208,8 +1206,9 @@ void app_main(void)
     esp_err_t cfg_err = doorbell_storage_panel_load_cfg(&g_panel_cfg);
     if (cfg_err != ESP_OK) {
         /* A corrupt or incompatible panel_cfg blob must not abort() into an endless boot loop that also disables the
-         * keypad. Run with in-RAM Kconfig defaults; nothing is erased at boot (I-13). The unreadable blob is replaced
-         * the next time the panel saves its settings (code change, lockout update, portal or console). */
+         * keypad. Run with in-RAM Kconfig defaults; nothing is erased at boot (I-13). doorbell_storage refuses to save
+         * panel_cfg in this state, so the stored record (with its unique factory codes, I-5) is never overwritten by
+         * the shared defaults; recovery is a full re-provision with Flash NVS (I-14). */
         ESP_LOGE(TAG, "CRITICAL: panel_cfg unreadable (%s) — running with in-RAM defaults, stored blob left intact",
                  esp_err_to_name(cfg_err));
         memset(&g_panel_cfg, 0, sizeof(g_panel_cfg));
@@ -1260,14 +1259,8 @@ void app_main(void)
     /* 6. Authenticated UART console initialization */
     panel_console_init();
 
-    /* 7. Register esp_timer pipeline health handle with TWDT (I-46) */
-    ESP_ERROR_CHECK(esp_task_wdt_add_user("panel_esp_timer", &s_panel_timer_wdt_user));
-    const esp_timer_create_args_t wdt_timer_args = {
-        .callback = &panel_timer_wdt_feed_cb,
-        .name = "panel_wdt_tmr",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&wdt_timer_args, &s_panel_wdt_periodic_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(s_panel_wdt_periodic_timer, 1000000ULL));
+    /* 7. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT (I-46) */
+    ESP_ERROR_CHECK(doorbell_twdt_register_timer_pipelines("panel_esp_timer", "panel_rtos_timer"));
 
     /* 8. Start TWDT-monitored panel worker task */
     xTaskCreate(panel_worker_task, "panel_worker", 8192, NULL, 5, NULL);

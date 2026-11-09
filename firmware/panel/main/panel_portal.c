@@ -184,9 +184,19 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    /* recv_wait_timeout is 2 s (panel_portal_start), so each recv is short. Retry on timeout like the ESP-IDF
+     * http_server examples, but give up as soon as the portal is stopping: panel_portal_stop() runs in the
+     * TWDT-subscribed worker and httpd_stop() waits for this handler to return (I-46). */
     int received = 0;
+    int64_t body_deadline_us = esp_timer_get_time() + 10000000LL;
     while (received < total_len) {
+        if (s_portal_abort || esp_timer_get_time() >= body_deadline_us) {
+            return ESP_FAIL;
+        }
         int r = httpd_req_recv(req, body + received, total_len - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
         if (r <= 0) {
             return ESP_FAIL;
         }
@@ -344,6 +354,24 @@ esp_err_t panel_portal_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
+    /* httpd_stop() (called from the TWDT-subscribed worker) waits for an in-flight handler, so keep each socket wait
+     * at 2 s: bounded well inside the 5 s TWDT window (I-46), yet tolerant of a slow or briefly interrupted SoftAP
+     * link while request headers arrive or the result page is sent. */
+    config.recv_wait_timeout = 2;
+    config.send_wait_timeout = 2;
+
+    /* Bind the listener to the SoftAP netif (SO_BINDTODEVICE, I-47). The getsockname() check in the handlers stays as
+     * defense in depth, but on its own it can be bypassed: lwIP's weak host model accepts a packet for the SoftAP IP
+     * that arrives on the STA (building LAN) interface. Static: httpd keeps the if_name pointer in its config copy. */
+    static struct ifreq ap_ifr;
+    memset(&ap_ifr, 0, sizeof(ap_ifr));
+    err = doorbell_net_get_softap_if_name(ap_ifr.ifr_name);
+    if (err != ESP_OK) {
+        doorbell_net_stop_softap();
+        doorbell_net_set_sta_reconnect_paused(false);
+        return err;
+    }
+    config.if_name = &ap_ifr;
 
     err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {

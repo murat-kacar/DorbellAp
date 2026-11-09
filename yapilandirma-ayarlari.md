@@ -53,9 +53,9 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| Application ACK timeout | 400 ms | Zil, kapı açma veya durum raporu gönderildikten sonra "aldım" cevabının (ACK) her denemede ne kadar bekleneceği (±25 ms rastgele sapma ile). Ölçülecek. |
+| Application ACK timeout | 400 ms | Zil, kapı açma veya durum raporu gönderildikten sonra "aldım" cevabının (ACK) her denemede ne kadar bekleneceği (±25 ms rastgele sapma ile). Masada ve sahada doğrulandı. Panel ve modülde **aynı** olmalıdır (Flasher farklıysa derlemeyi durdurur). |
 | Pairing window | 20 s | Panelin eşleşmemiş modülü yakalama (keşif) penceresi süresi. |
-| Pairing completion timeout | 10 s | Modül yakalandıktan sonra bina erişim noktasına (AP) bağlanıp DHCP'den IP alarak son onayı (`PAIR_COMPLETE`) göndermesi için tanınan ek tamamlama süresi. Ölçülecek. |
+| Pairing completion timeout | 10 s | Modül yakalandıktan sonra bina erişim noktasına (AP) bağlanıp DHCP'den IP alarak son onayı (`PAIR_COMPLETE`) göndermesi için tanınan ek tamamlama süresi. En az `5 s + 4 × ACK timeout + 0,5 s` olmalıdır (400 ms ile 7,1 s); daha kısaysa derleme hata verir. Panel ve modülde **aynı** olmalıdır. |
 | Replay counter NVS block size | 100 | Mesaj sayacının flash'a kaç mesajda bir önceden резерв edilerek (write-ahead) yazıldığı. |
 | Module health reports (heartbeat) | Açık | Her modül belirli aralıklarla panele onaylı durum raporu gönderir; panel her raporu loglar ve `ACK` döner. Kapatılırsa "no report" uyarıları, sessizlikte yeniden başlatma ve modülün "panele ulaşılamıyor" LED uyarısı devre dışı kalır. |
 | Heartbeat interval | 300 s | İki rapor arasındaki süre (±%10 rastgele sapma ile; elektrik kesintisi dönüşünde ilk rapor `[5 s .. Heartbeat interval]` arasında rastgele gecikmeyle gönderilir). |

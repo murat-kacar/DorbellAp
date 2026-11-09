@@ -23,6 +23,7 @@ from __future__ import annotations
 import codecs
 import csv
 import datetime
+import json
 import os
 import queue
 import re
@@ -1215,6 +1216,14 @@ def _sync_params_from_kconfig(kconfig_path: Path, param_lists: List[List[ParamSp
     return warnings
 
 
+# Kconfig settings that must match between the panel and apartment builds for the two to interoperate
+INTEROP_KCONFIG_KEYS = (
+    "DOORBELL_UDP_PORT",
+    "DOORBELL_ACK_TIMEOUT_MS",
+    "DOORBELL_PAIRING_COMPLETE_TIMEOUT_S",
+    "DOORBELL_HEARTBEAT_ENABLED",
+)
+
 KCONFIG_SYNC_WARNINGS = _sync_params_from_kconfig(KCONFIG_PROJBUILD_PATH, [PANEL_PARAMS, APARTMENT_PARAMS])
 
 
@@ -1255,6 +1264,18 @@ class ToolTip:
         if self.tip_win:
             self.tip_win.destroy()
             self.tip_win = None
+
+
+def build_info_path(bin_path: Path) -> Path:
+    return bin_path.with_suffix(".json")
+
+
+def read_build_info(bin_path: Path) -> Optional[Dict[str, Any]]:
+    """Read the sidecar written next to a flasher build (role and code lengths baked into that firmware)."""
+    try:
+        return json.loads(build_info_path(bin_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def generate_random_digits(length: int) -> str:
@@ -1740,6 +1761,13 @@ class DeviceCard(ttk.LabelFrame):
             return
 
         layout, detected_role = inspect_firmware_binary(fw_path)
+        if layout not in ("merged", "app_only"):
+            messagebox.showerror(
+                "Unknown Firmware Image",
+                f"'{fw_path.name}' is neither a merged image (bootloader @0x1000, partition table @0x8000, "
+                "app @0x10000) nor an ESP32 application image. Nothing was flashed.",
+            )
+            return
         selected_role = self.role_var.get()
         if detected_role in ("panel", "apartment") and detected_role != selected_role:
             ok = messagebox.askyesno(
@@ -1759,79 +1787,106 @@ class DeviceCard(ttk.LabelFrame):
             daemon=True,
         ).start()
 
+    def _required_code_lengths(self) -> Tuple[int, int, str]:
+        """Admin/user code lengths of the firmware selected on this card (from its build-info sidecar).
+
+        Falls back to the GUI configuration only when the selected image has no sidecar (e.g. browsed from
+        elsewhere), and says so, because the codes must match the firmware actually running on the panel.
+        """
+        fw_path = self._resolve_fw_path()
+        info = read_build_info(fw_path) if fw_path else None
+        if info and info.get("role") == "panel":
+            try:
+                return int(info["admin_code_len"]), int(info["user_code_len"]), f"firmware {fw_path.name}"
+            except (KeyError, TypeError, ValueError):
+                self.app.log(f"[{self.port}] Ignoring malformed build info for {fw_path.name}.\n")
+        return (
+            self.app.get_configured_admin_len(),
+            self.app.get_configured_user_len(),
+            "current GUI settings (selected firmware has no build info - make sure it matches)",
+        )
+
+    def _start_panel_nvs_provisioning(self, title: str, intro: str) -> None:
+        admin_code = self.admin_code_var.get().strip()
+        user_code = self.user_code_var.get().strip()
+        ssid = self.wifi_ssid_var.get().strip()
+        pw = self.wifi_pass_var.get()
+
+        req_admin_len, req_user_len, len_source = self._required_code_lengths()
+
+        if not admin_code.isdigit() or len(admin_code) != req_admin_len:
+            messagebox.showerror(
+                "Invalid Admin Code",
+                f"Admin code must be exactly {req_admin_len} digits (0-9), as required by the {len_source}.",
+            )
+            return
+        if not user_code.isdigit() or len(user_code) != req_user_len:
+            messagebox.showerror(
+                "Invalid User Code",
+                f"User code must be exactly {req_user_len} digits (0-9), as required by the {len_source}.",
+            )
+            return
+        if user_code == admin_code:
+            messagebox.showerror("Invalid Codes", "User code and Admin code cannot be identical.")
+            return
+        if "\x00" in ssid or "\x00" in pw:
+            messagebox.showerror("Invalid Wi-Fi Credentials", "SSID and password cannot contain null bytes.")
+            return
+        ssid_bytes = len(ssid.encode("utf-8"))
+        pw_bytes = len(pw.encode("utf-8"))
+        if ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
+            messagebox.showerror(
+                "Invalid Wi-Fi Credentials",
+                "Wi-Fi SSID must be 0-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes.",
+            )
+            return
+
+        ok = messagebox.askyesno(
+            title,
+            f"{intro}\n\n"
+            f"This replaces the entire 24 KB NVS region (0x9000) on {self.port} and erases any existing apartment "
+            "registrations on this panel.\n\n"
+            f"Provision Admin code ({len(admin_code)} digits) and User code ({len(user_code)} digits) now?",
+        )
+        if not ok:
+            return
+
+        self._close_monitor_if_open()
+        self.set_busy(True)
+        self.set_status("Flashing panel NVS...", "#b36b00", 10.0)
+        threading.Thread(
+            target=self.app.worker_flash_panel_nvs,
+            args=(self, admin_code, user_code, ssid, pw),
+            daemon=True,
+        ).start()
+
+    def _start_unit_nvs_erase(self, title: str, done_status: str) -> None:
+        ok = messagebox.askyesno(
+            title,
+            f"Erase the 24 KB NVS partition (0x9000) on apartment module {self.port}?\n"
+            "This clears its pairing state and building Wi-Fi credentials.",
+        )
+        if not ok:
+            return
+        self._close_monitor_if_open()
+        self.set_busy(True)
+        self.set_status("Clearing unit NVS...", "#b36b00", 10.0)
+        threading.Thread(
+            target=self.app.worker_erase_nvs_region,
+            args=(self, done_status),
+            daemon=True,
+        ).start()
+
     def _on_flash_nvs(self) -> None:
         if self._busy:
             return
-        role = self.role_var.get()
-        if role == "panel":
-            admin_code = self.admin_code_var.get().strip()
-            user_code = self.user_code_var.get().strip()
-            ssid = self.wifi_ssid_var.get().strip()
-            pw = self.wifi_pass_var.get()
-
-            req_admin_len = self.app.get_configured_admin_len()
-            req_user_len = self.app.get_configured_user_len()
-
-            if not admin_code.isdigit() or len(admin_code) != req_admin_len:
-                messagebox.showerror(
-                    "Invalid Admin Code",
-                    f"Admin code must be exactly {req_admin_len} digits (0-9).",
-                )
-                return
-            if not user_code.isdigit() or len(user_code) != req_user_len:
-                messagebox.showerror(
-                    "Invalid User Code",
-                    f"User code must be exactly {req_user_len} digits (0-9).",
-                )
-                return
-            if user_code == admin_code:
-                messagebox.showerror("Invalid Codes", "User code and Admin code cannot be identical.")
-                return
-            if "\x00" in ssid or "\x00" in pw:
-                messagebox.showerror("Invalid Wi-Fi Credentials", "SSID and password cannot contain null bytes.")
-                return
-            ssid_bytes = len(ssid.encode("utf-8"))
-            pw_bytes = len(pw.encode("utf-8"))
-            if ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
-                messagebox.showerror(
-                    "Invalid Wi-Fi Credentials",
-                    "Wi-Fi SSID must be 0-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes.",
-                )
-                return
-
-            ok = messagebox.askyesno(
+        if self.role_var.get() == "panel":
+            self._start_panel_nvs_provisioning(
                 "Confirm Panel NVS Provisioning (I-14)",
-                f"Flashing the NVS partition on {self.port} replaces the entire 24 KB NVS region (0x9000) "
-                "and erases any existing apartment registrations on this panel.\n\n"
-                f"Provision Admin code ({len(admin_code)} digits) and User code ({len(user_code)} digits) now?",
+                "Write the factory NVS image with the admin/user codes and optional Wi-Fi from this card.",
             )
-            if not ok:
-                return
-
-            self._close_monitor_if_open()
-            self.set_busy(True)
-            self.set_status("Flashing panel NVS...", "#b36b00", 10.0)
-            threading.Thread(
-                target=self.app.worker_flash_panel_nvs,
-                args=(self, admin_code, user_code, ssid, pw),
-                daemon=True,
-            ).start()
         else:
-            ok = messagebox.askyesno(
-                "Confirm Apartment NVS Clear",
-                f"Erase the 24 KB NVS partition (0x9000) on apartment module {self.port}?\n"
-                "This clears its pairing state and building Wi-Fi credentials.",
-            )
-            if not ok:
-                return
-            self._close_monitor_if_open()
-            self.set_busy(True)
-            self.set_status("Clearing unit NVS...", "#b36b00", 10.0)
-            threading.Thread(
-                target=self.app.worker_erase_nvs_region,
-                args=(self, "NVS cleared (unpaired)"),
-                daemon=True,
-            ).start()
+            self._start_unit_nvs_erase("Confirm Apartment NVS Clear", "NVS cleared (unpaired)")
 
     def _on_monitor(self) -> None:
         if self._busy:
@@ -1844,21 +1899,15 @@ class DeviceCard(ttk.LabelFrame):
     def _on_factory_reset(self) -> None:
         if self._busy:
             return
-        ok = messagebox.askyesno(
-            "Confirm Factory Reset",
-            f"Reset NVS partition (0x9000..0xF000) on {self.port} to factory state?\n\n"
-            "All apartment registrations and stored credentials in NVS will be erased.",
-        )
-        if not ok:
-            return
-        self._close_monitor_if_open()
-        self.set_busy(True)
-        self.set_status("Factory resetting NVS...", "#b36b00", 10.0)
-        threading.Thread(
-            target=self.app.worker_erase_nvs_region,
-            args=(self, "Factory reset complete"),
-            daemon=True,
-        ).start()
+        if self.role_var.get() == "panel":
+            # A bare NVS erase would leave the panel on the shared built-in codes (I-5). Re-provision instead.
+            self._start_panel_nvs_provisioning(
+                "Confirm Panel Factory Reset (I-5)",
+                "Enter the factory Admin and User codes PRINTED ON THIS PANEL'S LABEL in the fields above. "
+                "The panel is reset to those codes, not to the shared built-in defaults.",
+            )
+        else:
+            self._start_unit_nvs_erase("Confirm Factory Reset", "Factory reset complete")
 
     def _on_erase_flash(self) -> None:
         if self._busy:
@@ -2292,7 +2341,40 @@ class DoorbellFlasherApp:
                     return None
                 parsed[spec.kconfig] = sv
 
+        # Settings both ends of the link depend on must be identical in the panel and apartment builds: a mismatched
+        # UDP port or ACK/pairing timing breaks communication, and heartbeats disabled only on the modules would make
+        # the panel's silence restart (I-52) reboot it periodically.
+        other_vars = self.unit_vars if is_panel else self.panel_vars
+        other_name = "Apartment" if is_panel else "Panel"
+        for key in INTEROP_KCONFIG_KEYS:
+            other_raw = other_vars[key].get()
+            other_val = bool(other_raw) if isinstance(parsed[key], bool) else str(other_raw).strip()
+            this_val = parsed[key] if isinstance(parsed[key], bool) else str(parsed[key])
+            if other_val != this_val:
+                label = next(s.label for s in specs if s.kconfig == key)
+                messagebox.showerror(
+                    "Panel / Apartment Mismatch",
+                    f"'{label}' must be identical for panel and apartment builds.\n"
+                    f"This role: {this_val}   {other_name}: {other_val}\n\n"
+                    f"Set the same value in both role tabs (and rebuild the other role if it was already flashed).",
+                )
+                return None
+
         # Cross-parameter checks (matching doorbell_config_checks.h, I-66)
+        pair_need_ms = 4 * parsed["DOORBELL_ACK_TIMEOUT_MS"] + 500 + 5000
+        if parsed["DOORBELL_PAIRING_COMPLETE_TIMEOUT_S"] * 1000 < pair_need_ms:
+            messagebox.showerror(
+                "Validation Error",
+                f"Pairing LAN timeout must be at least {(pair_need_ms + 999) // 1000} s with an ACK timeout of "
+                f"{parsed['DOORBELL_ACK_TIMEOUT_MS']} ms (5 s LAN join + 4 x ACK timeout + 0.5 s).",
+            )
+            return None
+        if parsed["DOORBELL_LED_ERR_DURATION_MS"] < parsed["DOORBELL_LED_FAST_PERIOD_MS"]:
+            messagebox.showerror("Validation Error", "Error duration must be at least one fast blink period.")
+            return None
+        if parsed["DOORBELL_LED_NO_RESP_DURATION_MS"] < parsed["DOORBELL_LED_MEDIUM_PERIOD_MS"]:
+            messagebox.showerror("Validation Error", "No-response duration must be at least one medium blink period.")
+            return None
         if parsed["DOORBELL_LED_DIM_BRIGHTNESS_PCT"] >= parsed["DOORBELL_LED_FULL_BRIGHTNESS_PCT"]:
             messagebox.showerror(
                 "Validation Error",
@@ -2603,7 +2685,18 @@ class DoorbellFlasherApp:
                 self.log("[Build] Initializing sdkconfig via idf.py reconfigure...\n")
                 self._run_logged_cmd([python_exe, str(idf_py), "reconfigure"], cwd=fw_dir, env=env)
 
-            self._apply_kconfig_to_sdkconfig(sdkconfig_path, specs, values)
+            apply_specs, apply_values = list(specs), dict(values)
+            if is_panel:
+                # The blank-NVS fallback codes must match the configured lengths (compile-time check in
+                # doorbell_config_checks.h); they are bench-only placeholders, real panels get unique codes via Flash NVS.
+                # Different digit strings so admin and user placeholders never coincide (e.g. both 8 digits).
+                for key, length, digits in (
+                    ("DOORBELL_PANEL_DEFAULT_ADMIN_CODE", values["DOORBELL_PANEL_ADMIN_CODE_LEN"], "1234567890"),
+                    ("DOORBELL_PANEL_DEFAULT_USER_CODE", values["DOORBELL_PANEL_USER_CODE_LEN"], "12340987"),
+                ):
+                    apply_specs.append(ParamSpec(key, key, "", "str", "", ""))
+                    apply_values[key] = digits[: int(length)]
+            self._apply_kconfig_to_sdkconfig(sdkconfig_path, apply_specs, apply_values)
             self.log("[Build] Applied GUI Kconfig settings to sdkconfig. Running idf.py build...\n")
 
             rc = self._run_logged_cmd([python_exe, str(idf_py), "build"], cwd=fw_dir, env=env)
@@ -2652,6 +2745,11 @@ class DoorbellFlasherApp:
                 self.log("[Build] ERROR: esptool merge-bin failed.\n")
                 return
 
+            info: Dict[str, Any] = {"role": prefix}
+            if is_panel:
+                info["admin_code_len"] = values["DOORBELL_PANEL_ADMIN_CODE_LEN"]
+                info["user_code_len"] = values["DOORBELL_PANEL_USER_CODE_LEN"]
+            build_info_path(out_path).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
             self.log(f"[Build] SUCCESS -> flasher/builds/{out_name} ({out_path.stat().st_size} bytes)\n")
 
             def _on_done() -> None:
@@ -2921,11 +3019,11 @@ class DoorbellFlasherApp:
     ) -> None:
         port = card.port
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
-        idf_path = Path(os.environ.get("IDF_PATH", str(IDF_PATH_DEFAULT)))
-        nvs_gen_script = idf_path / "components" / "nvs_flash" / "nvs_partition_generator" / "nvs_partition_gen.py"
-
         self.log(f"\n[{port}] Generating and flashing 24 KB factory NVS partition (0x9000)...\n")
         try:
+            # Same ESP-IDF environment as the build (EIM profile / idf_tools export), not a guessed path
+            idf_path = Path(self._build_idf_env()["IDF_PATH"])
+            nvs_gen_script = idf_path / "components" / "nvs_flash" / "nvs_partition_generator" / "nvs_partition_gen.py"
             blob = pack_panel_cfg_blob(wifi_ssid, wifi_pass, admin_code, user_code)
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp = Path(tmpdir)

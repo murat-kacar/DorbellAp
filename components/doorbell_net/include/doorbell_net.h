@@ -96,6 +96,21 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
 int doorbell_udp_socket_create(uint16_t port, uint32_t bind_ipv4_host, uint32_t rcvtimeo_ms);
 
 /**
+ * @brief Get the lwIP interface name of the SoftAP netif (for SO_BINDTODEVICE / httpd_config_t.if_name).
+ *
+ * @param[out] out_name Buffer of at least 6 bytes (lwIP NETIF_NAMESIZE).
+ */
+esp_err_t doorbell_net_get_softap_if_name(char out_name[6]);
+
+/**
+ * @brief Bind a socket to the SoftAP interface with SO_BINDTODEVICE (I-27, I-47).
+ *
+ * An IP-only bind is not enough: lwIP uses the weak host model and accepts a packet for the SoftAP address that
+ * arrives on the STA interface. A device-bound pcb drops anything not received on the SoftAP netif.
+ */
+esp_err_t doorbell_net_bind_socket_to_softap(int sock);
+
+/**
  * @brief Send an encrypted protocol frame using unicast on Attempt 1 and dual-path
  *        (unicast + 255.255.255.255 broadcast) on retries (I-33).
  */

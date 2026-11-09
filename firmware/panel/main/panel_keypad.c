@@ -98,6 +98,14 @@ static void reset_lockout_on_success_locked(void)
     }
 }
 
+void panel_lockout_clear_locked(void)
+{
+    /* Caller holds g_panel_mutex and resets the persisted counters (g_panel_cfg) itself */
+    s_lockout_deadline_us = 0;
+    s_lockout_persist_divider = 0;
+    doorbell_led_panel_stop(LED_PANEL_LOCKOUT);
+}
+
 void panel_lockout_tick_1s(void)
 {
     xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
@@ -600,8 +608,8 @@ esp_err_t panel_keypad_init(void)
     button_config_t rst_cfg = {0};
     button_gpio_config_t rst_gpio = {
         .gpio_num = CONFIG_DOORBELL_PANEL_GPIO_RESET_BTN,
-        .active_level = CONFIG_DOORBELL_PANEL_RESET_BTN_ACTIVE_LOW ? 0 : 1,
-        .disable_pull = !CONFIG_DOORBELL_PANEL_RESET_BTN_INTERNAL_PULL,
+        .active_level = DOORBELL_PANEL_RESET_BTN_ACTIVE_LOW ? 0 : 1,
+        .disable_pull = !DOORBELL_PANEL_RESET_BTN_INTERNAL_PULL,
     };
     button_handle_t rst_btn = NULL;
     ESP_ERROR_CHECK(iot_button_new_gpio_device(&rst_cfg, &rst_gpio, &rst_btn));

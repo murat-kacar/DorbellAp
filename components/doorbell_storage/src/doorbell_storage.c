@@ -19,6 +19,11 @@ _Static_assert(sizeof(doorbell_panel_cfg_blob_t) == 168, "doorbell_panel_cfg_blo
 _Static_assert(sizeof(doorbell_panel_apt_blob_t) == 48,  "doorbell_panel_apt_blob_t must be 48 bytes");
 _Static_assert(sizeof(doorbell_unit_state_blob_t) == 152, "doorbell_unit_state_blob_t must be 152 bytes");
 
+/* Set when an existing panel_cfg blob could not be validated (CRC/magic/version/size). The panel then runs on in-RAM
+ * defaults, and saving would overwrite the stored record - including its unique per-device factory codes (I-5) - with
+ * the shared built-in ones. Keep the stored blob intact instead (I-13 spirit); recovery is a full Flash NVS (I-14). */
+static bool s_panel_cfg_write_protected = false;
+
 static uint32_t compute_crc(const void *data, size_t len_without_crc)
 {
     return esp_rom_crc32_le(0, (const uint8_t *)data, len_without_crc);
@@ -62,7 +67,16 @@ esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg)
             return ESP_OK;
         }
         ESP_LOGE(TAG, "panel_cfg blob CRC/magic mismatch");
+        s_panel_cfg_write_protected = true;
         return ESP_ERR_INVALID_CRC;
+    }
+
+    if (err == ESP_OK || err == ESP_ERR_NVS_INVALID_LENGTH) {
+        /* nvs_get_blob() succeeds for a stored blob shorter than the buffer and fails with INVALID_LENGTH for a longer
+         * one; never accept a partial record */
+        ESP_LOGE(TAG, "panel_cfg blob size mismatch (stored size differs from %u bytes)", (unsigned)sizeof(*out_cfg));
+        s_panel_cfg_write_protected = true;
+        return ESP_ERR_INVALID_SIZE;
     }
 
     if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -80,7 +94,9 @@ esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg)
         strncpy(out_cfg->factory_user_code, CONFIG_DOORBELL_PANEL_DEFAULT_USER_CODE,
                 sizeof(out_cfg->factory_user_code) - 1);
 #endif
-        ESP_LOGI(TAG, "Initializing default panel_cfg record in NVS");
+        /* Codes are not logged (I-25); this only flags that the shared built-in codes are active (I-5) */
+        ESP_LOGW(TAG, "Blank NVS: initializing panel_cfg with built-in default codes. "
+                      "Provision unique per-device codes (flasher 'Flash NVS') before deployment.");
         return doorbell_storage_panel_save_cfg(out_cfg);
     }
 
@@ -91,6 +107,10 @@ esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg)
 {
     if (!cfg) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_panel_cfg_write_protected) {
+        ESP_LOGW(TAG, "panel_cfg save refused: stored record is unreadable and kept intact (re-provision with Flash NVS)");
+        return ESP_ERR_INVALID_STATE;
     }
     cfg->magic = PANEL_CFG_MAGIC;
     cfg->version = BLOB_VERSION;

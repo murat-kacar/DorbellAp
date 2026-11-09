@@ -3,6 +3,7 @@
 #include "led_indicator.h"
 #include "led_indicator_ledc.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "doorbell_led";
 
@@ -22,9 +23,44 @@ static const char *TAG = "doorbell_led";
 #define TRIPLE_REST_MS  (CONFIG_DOORBELL_LED_MULTI_PERIOD_MS - (3 * PULSE_MS + 2 * GAP_MS))
 #define SPARSE_REST_MS  (CONFIG_DOORBELL_LED_SPARSE_PERIOD_MS - PULSE_MS)
 
+/* Timed one-shot indications (error, no-response) loop their blink pattern and are stopped by a one-shot esp_timer
+ * after the configured duration, so the duration Kconfig options are honoured independently of the blink period. */
+static esp_timer_handle_t create_stop_timer(esp_timer_cb_t cb, void *arg, const char *name)
+{
+    const esp_timer_create_args_t args = {
+        .callback = cb,
+        .arg = arg,
+        .name = name,
+    };
+    esp_timer_handle_t t = NULL;
+    if (esp_timer_create(&args, &t) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create LED stop timer '%s'", name);
+        return NULL;
+    }
+    return t;
+}
+
+/* Start a timed indication: cancel the previous stop timer FIRST, so a stop callback from the previous indication
+ * cannot fire between led_indicator_start() and the re-arm and cut the new indication short. */
+static void start_timed(led_indicator_handle_t led, int state, esp_timer_handle_t t, uint32_t duration_ms)
+{
+    esp_timer_stop(t); /* ESP_ERR_INVALID_STATE when not running is expected */
+    led_indicator_start(led, state);
+    esp_timer_start_once(t, (uint64_t)duration_ms * 1000ULL);
+}
+
 #if defined(CONFIG_DOORBELL_ROLE_PANEL)
 
 static led_indicator_handle_t s_panel_led = NULL;
+static esp_timer_handle_t s_panel_err_timer = NULL;
+static esp_timer_handle_t s_panel_no_resp_timer = NULL;
+
+static void panel_stop_timer_cb(void *arg)
+{
+    if (s_panel_led) {
+        led_indicator_stop(s_panel_led, (int)(intptr_t)arg);
+    }
+}
 
 static const blink_step_t s_panel_key_press[] = {
     {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, CONFIG_DOORBELL_LED_SHORT_FLASH_MS},
@@ -44,36 +80,18 @@ static const blink_step_t s_panel_result_ok[] = {
     {LED_BLINK_STOP, 0, 0},
 };
 
-/* Fast blink (100 ms ON / 100 ms OFF) for 1000 ms (5 cycles) */
+/* Fast blink, stopped after CONFIG_DOORBELL_LED_ERR_DURATION_MS by s_panel_err_timer */
 static const blink_step_t s_panel_result_err[] = {
     {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
     {LED_BLINK_HOLD, LED_STATE_OFF,   FAST_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   FAST_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   FAST_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   FAST_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   FAST_HALF_MS},
-    {LED_BLINK_STOP, 0, 0},
+    {LED_BLINK_LOOP, 0, 0},
 };
 
-/* Medium blink (250 ms ON / 250 ms OFF) for 3000 ms (6 cycles) */
+/* Medium blink, stopped after CONFIG_DOORBELL_LED_NO_RESP_DURATION_MS by s_panel_no_resp_timer */
 static const blink_step_t s_panel_no_response[] = {
     {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
     {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_STOP, 0, 0},
+    {LED_BLINK_LOOP, 0, 0},
 };
 
 static const blink_step_t s_panel_reset_hold[] = {
@@ -131,7 +149,7 @@ static const blink_step_t *s_panel_blink_lists[LED_PANEL_MAX] = {
 esp_err_t doorbell_led_panel_init(gpio_num_t gpio_num)
 {
     led_indicator_ledc_config_t ledc_cfg = {
-        .is_active_level_high = CONFIG_DOORBELL_LED_ACTIVE_HIGH,
+        .is_active_level_high = DOORBELL_LED_ACTIVE_HIGH,
         .timer_inited = false,
         .timer_num = LEDC_TIMER_0,
         .gpio_num = gpio_num,
@@ -146,6 +164,13 @@ esp_err_t doorbell_led_panel_init(gpio_num_t gpio_num)
         ESP_LOGE(TAG, "Failed to init panel LED on GPIO %d: %s", gpio_num, esp_err_to_name(err));
         return err;
     }
+    s_panel_err_timer = create_stop_timer(panel_stop_timer_cb, (void *)(intptr_t)LED_PANEL_RESULT_ERR, "led_err");
+    s_panel_no_resp_timer = create_stop_timer(panel_stop_timer_cb, (void *)(intptr_t)LED_PANEL_NO_RESPONSE,
+                                              "led_noresp");
+    if (!s_panel_err_timer || !s_panel_no_resp_timer) {
+        /* The error / no-response patterns loop until their stop timer fires: never run without it */
+        return ESP_ERR_NO_MEM;
+    }
     led_indicator_start(s_panel_led, LED_PANEL_IDLE);
     return ESP_OK;
 }
@@ -153,7 +178,13 @@ esp_err_t doorbell_led_panel_init(gpio_num_t gpio_num)
 void doorbell_led_panel_start(doorbell_panel_led_state_t state)
 {
     if (s_panel_led && state < LED_PANEL_MAX) {
-        led_indicator_start(s_panel_led, state);
+        if (state == LED_PANEL_RESULT_ERR) {
+            start_timed(s_panel_led, state, s_panel_err_timer, CONFIG_DOORBELL_LED_ERR_DURATION_MS);
+        } else if (state == LED_PANEL_NO_RESPONSE) {
+            start_timed(s_panel_led, state, s_panel_no_resp_timer, CONFIG_DOORBELL_LED_NO_RESP_DURATION_MS);
+        } else {
+            led_indicator_start(s_panel_led, state);
+        }
     }
 }
 
@@ -169,6 +200,14 @@ void doorbell_led_panel_stop(doorbell_panel_led_state_t state)
 #if defined(CONFIG_DOORBELL_ROLE_UNIT)
 
 static led_indicator_handle_t s_unit_led = NULL;
+static esp_timer_handle_t s_unit_no_resp_timer = NULL;
+
+static void unit_stop_timer_cb(void *arg)
+{
+    if (s_unit_led) {
+        led_indicator_stop(s_unit_led, (int)(intptr_t)arg);
+    }
+}
 
 static const blink_step_t s_unit_ringing[] = {
     {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, FAST_HALF_MS},
@@ -211,20 +250,11 @@ static const blink_step_t s_unit_result_ok[] = {
     {LED_BLINK_STOP, 0, 0},
 };
 
+/* Medium blink, stopped after CONFIG_DOORBELL_LED_NO_RESP_DURATION_MS by s_unit_no_resp_timer */
 static const blink_step_t s_unit_no_response[] = {
     {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
     {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_BRIGHTNESS, BRIGHTNESS_FULL, MED_HALF_MS},
-    {LED_BLINK_HOLD, LED_STATE_OFF,   MED_HALF_MS},
-    {LED_BLINK_STOP, 0, 0},
+    {LED_BLINK_LOOP, 0, 0},
 };
 
 static const blink_step_t s_unit_pairing_search[] = {
@@ -272,7 +302,7 @@ static const blink_step_t *s_unit_blink_lists[LED_UNIT_MAX] = {
 esp_err_t doorbell_led_unit_init(gpio_num_t gpio_num)
 {
     led_indicator_ledc_config_t ledc_cfg = {
-        .is_active_level_high = CONFIG_DOORBELL_LED_ACTIVE_HIGH,
+        .is_active_level_high = DOORBELL_LED_ACTIVE_HIGH,
         .timer_inited = false,
         .timer_num = LEDC_TIMER_0,
         .gpio_num = gpio_num,
@@ -287,13 +317,22 @@ esp_err_t doorbell_led_unit_init(gpio_num_t gpio_num)
         ESP_LOGE(TAG, "Failed to init unit LED on GPIO %d: %s", gpio_num, esp_err_to_name(err));
         return err;
     }
+    s_unit_no_resp_timer = create_stop_timer(unit_stop_timer_cb, (void *)(intptr_t)LED_UNIT_NO_RESPONSE, "led_noresp");
+    if (!s_unit_no_resp_timer) {
+        /* The no-response pattern loops until its stop timer fires: never run without it */
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
 void doorbell_led_unit_start(doorbell_unit_led_state_t state)
 {
     if (s_unit_led && state < LED_UNIT_MAX) {
-        led_indicator_start(s_unit_led, state);
+        if (state == LED_UNIT_NO_RESPONSE) {
+            start_timed(s_unit_led, state, s_unit_no_resp_timer, CONFIG_DOORBELL_LED_NO_RESP_DURATION_MS);
+        } else {
+            led_indicator_start(s_unit_led, state);
+        }
     }
 }
 
