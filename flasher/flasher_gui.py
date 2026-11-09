@@ -2576,11 +2576,12 @@ class DoorbellFlasherApp:
         prefix = "panel" if is_panel else "apartment"
 
         self.log(f"\n=== Building {prefix} firmware ===\n")
-        env = self._build_idf_env()
-        idf_py = Path(env["IDF_PATH"]) / "tools" / "idf.py"
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
 
         try:
+            # Inside try: an environment failure must be logged and must unlock the Build button
+            env = self._build_idf_env()
+            idf_py = Path(env["IDF_PATH"]) / "tools" / "idf.py"
             sdkconfig_path = fw_dir / "sdkconfig"
             if not sdkconfig_path.is_file():
                 self.log("[Build] Initializing sdkconfig via idf.py reconfigure...\n")
