@@ -6,3 +6,4 @@ if exist "%IDF_PY%" (
 ) else (
     python "%~dp0flasher_gui.py" %*
 )
+
