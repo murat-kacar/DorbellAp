@@ -20,6 +20,7 @@ Provides a two-column desktop interface:
 
 from __future__ import annotations
 
+import codecs
 import csv
 import datetime
 import os
@@ -72,10 +73,64 @@ ESP32_INPUT_ONLY_GPIOS = {34, 35, 36, 37, 38, 39}
 ESP32_VALID_GPIOS = set(range(0, 40)) - {20, 24, 28, 29, 30, 31} - ESP32_FLASH_GPIOS
 ESP32_VALID_OUTPUT_GPIOS = ESP32_VALID_GPIOS - ESP32_INPUT_ONLY_GPIOS
 
+# ANSI CSI escape sequences (colors, cursor moves, line erase) emitted by ESP_LOG and linenoise
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+# esptool 5.x write-flash progress line: "Writing at 0x00012345 [=====>    ]  45.2% ..."
+_WRITE_PROGRESS_RE = re.compile(r"Writing at 0x[0-9a-fA-F]+\b.*?(\d+(?:\.\d+)?)\s*%")
+
+
+# Runs inside the ESP-IDF venv (esptool 5.x). Chip info is printed before the hard reset so a reset
+# failure cannot discard it; every failure is reported as one PROBE_ERROR line instead of a traceback.
+ESPTOOL_PROBE_SCRIPT = """
+import sys
+try:
+    from esptool.cmds import detect_chip
+    with detect_chip(port=sys.argv[1], connect_attempts=2) as esp:
+        desc = esp.get_chip_description()
+        mac = esp.read_mac("BASE_MAC")
+        mac_s = ":".join(f"{b:02x}" for b in mac) if mac else "unknown"
+        sb = "on" if esp.get_secure_boot_enabled() else "off"
+        fe = "on" if esp.get_flash_encryption_enabled() else "off"
+        print(f"PROBE_INFO|{desc}|{mac_s}|{sb}|{fe}", flush=True)
+        try:
+            esp.hard_reset()
+        except Exception as exc:
+            print(f"PROBE_WARN|hard reset failed: {exc}".replace(chr(10), " "), flush=True)
+except Exception as exc:
+    print(f"PROBE_ERROR|{type(exc).__name__}: {exc}".replace(chr(10), " "), flush=True)
+    sys.exit(1)
+"""
+
+# esptool errors that mean "no ESP32 answered on this port" rather than a tooling problem
+_PROBE_NO_CHIP_RE = re.compile(r"Failed to connect|No serial data received|Timed out", re.I)
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI_CSI_RE.sub("", text)
+
+
+def escape_quoted(val: Any) -> str:
+    """Escape backslashes and double quotes for a double-quoted Kconfig / esp_console argument."""
+    return str(val).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def unescape_quoted(raw: str) -> str:
+    """Inverse of escape_quoted for a value that may be wrapped in double quotes."""
+    if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+        return re.sub(r"\\(.)", r"\1", raw[1:-1])
+    return raw
+
 
 @dataclass
 class ParamSpec:
-    """Metadata for a single Kconfig parameter exposed in the GUI."""
+    """Metadata for a single Kconfig parameter exposed in the GUI.
+
+    `default`, `min_val` and `max_val` are only fallbacks: at import time they are overwritten from
+    Kconfig.projbuild (see _sync_params_from_kconfig), which is the single source of truth. Help texts
+    therefore do not repeat ranges or defaults; the tooltip appends them from the synced values.
+    """
 
     kconfig: str
     label: str
@@ -98,7 +153,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         13,
-        "Output GPIO driving matrix keypad row 0 (default 13).",
+        "Output GPIO driving matrix keypad row 0.",
         0,
         33,
         is_gpio_output=True,
@@ -109,7 +164,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         14,
-        "Output GPIO driving matrix keypad row 1 (default 14).",
+        "Output GPIO driving matrix keypad row 1.",
         0,
         33,
         is_gpio_output=True,
@@ -120,7 +175,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         27,
-        "Output GPIO driving matrix keypad row 2 (default 27).",
+        "Output GPIO driving matrix keypad row 2.",
         0,
         33,
         is_gpio_output=True,
@@ -131,7 +186,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         26,
-        "Output GPIO driving matrix keypad row 3 (default 26).",
+        "Output GPIO driving matrix keypad row 3.",
         0,
         33,
         is_gpio_output=True,
@@ -142,7 +197,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         25,
-        "Input GPIO reading matrix keypad column 0 (default 25).",
+        "Input GPIO reading matrix keypad column 0.",
         0,
         39,
         is_gpio_input=True,
@@ -153,7 +208,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         33,
-        "Input GPIO reading matrix keypad column 1 (default 33).",
+        "Input GPIO reading matrix keypad column 1.",
         0,
         39,
         is_gpio_input=True,
@@ -164,7 +219,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         32,
-        "Input GPIO reading matrix keypad column 2 (default 32).",
+        "Input GPIO reading matrix keypad column 2.",
         0,
         39,
         is_gpio_input=True,
@@ -175,7 +230,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         23,
-        "Output GPIO driving the entrance door lock relay (default 23, boot-safe init per I-22).",
+        "Output GPIO driving the entrance door lock relay (boot-safe init per I-22).",
         0,
         33,
         is_gpio_output=True,
@@ -194,7 +249,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         2,
-        "Output GPIO driving the panel status LED via LEDC PWM (default 2).",
+        "Output GPIO driving the panel status LED via LEDC PWM.",
         0,
         33,
         is_gpio_output=True,
@@ -213,7 +268,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         19,
-        "Input GPIO for the hidden code-reset button inside the panel enclosure (default 19).",
+        "Input GPIO for the hidden code-reset button inside the panel enclosure.",
         0,
         39,
         is_gpio_input=True,
@@ -241,7 +296,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Keypad & Relay",
         "str",
         "123456789*0#",
-        "12-character row-major key map for the 4x3 keypad (default '123456789*0#').",
+        "12-character row-major key map for the 4x3 keypad.",
         max_len=12,
     ),
     ParamSpec(
@@ -250,7 +305,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Keypad & Relay",
         "int",
         10,
-        "Seconds of inactivity before an incomplete keypad entry is cleared (3-60 s).",
+        "Seconds of inactivity before an incomplete keypad entry is cleared.",
         3,
         60,
     ),
@@ -260,7 +315,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Keypad & Relay",
         "int",
         500,
-        "Milliseconds the door relay remains energized on door open (100-10000 ms).",
+        "Milliseconds the door relay remains energized on door open.",
         100,
         10000,
     ),
@@ -271,7 +326,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Apartments & Codes",
         "int",
         1,
-        "Lowest valid apartment number accepted on the keypad (1-254).",
+        "Lowest valid apartment number accepted on the keypad.",
         1,
         254,
     ),
@@ -281,7 +336,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Apartments & Codes",
         "int",
         99,
-        "Highest valid apartment number accepted on the keypad (1-99).",
+        "Highest valid apartment number accepted on the keypad.",
         1,
         99,
     ),
@@ -291,7 +346,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Apartments & Codes",
         "int",
         8,
-        "Number of digits in the panel admin code (8-10 digits; min 8 required for WPA3-SAE setup AP).",
+        "Number of digits in the panel admin code (min 8 required for WPA3-SAE setup AP).",
         8,
         10,
     ),
@@ -301,7 +356,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Apartments & Codes",
         "int",
         4,
-        "Number of digits in the shared building door-open user code (4-8 digits).",
+        "Number of digits in the shared building door-open user code.",
         4,
         8,
     ),
@@ -312,7 +367,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         5,
-        "Consecutive wrong user/admin code entries before keypad lockout activates (1-20).",
+        "Consecutive wrong user/admin code entries before keypad lockout activates.",
         1,
         20,
     ),
@@ -322,7 +377,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         60,
-        "Duration of the first keypad lockout in seconds (10-3600 s).",
+        "Duration of the first keypad lockout in seconds.",
         10,
         3600,
     ),
@@ -332,7 +387,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         2,
-        "Multiplier applied to lockout duration on each subsequent lockout level (1-10).",
+        "Multiplier applied to lockout duration on each subsequent lockout level.",
         1,
         10,
     ),
@@ -342,7 +397,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         900,
-        "Maximum keypad lockout duration cap in seconds (10-86400 s).",
+        "Maximum keypad lockout duration cap in seconds.",
         10,
         86400,
     ),
@@ -352,7 +407,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         10,
-        "Minimum hold time in seconds for the hidden code-reset button (3-30 s).",
+        "Minimum hold time in seconds for the hidden code-reset button.",
         3,
         30,
     ),
@@ -362,7 +417,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Lockout & Reset",
         "int",
         60,
-        "Maximum hold time in seconds for the hidden code-reset button (15-65 s).",
+        "Maximum hold time in seconds for the hidden code-reset button.",
         15,
         65,
     ),
@@ -373,7 +428,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         19500,
-        "UDP port used for all operational and pairing messages (1024-49151).",
+        "UDP port used for all operational and pairing messages.",
         1024,
         49151,
     ),
@@ -383,7 +438,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         400,
-        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-5000 ms).",
+        "Milliseconds to wait for an application-layer UDP ACK before retrying.",
         100,
         5000,
     ),
@@ -393,7 +448,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         2,
-        "Number of dual-path (unicast + broadcast) retries when RING_ACK is not received (0-5).",
+        "Number of dual-path (unicast + broadcast) retries when RING_ACK is not received.",
         0,
         5,
     ),
@@ -403,7 +458,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         20,
-        "Seconds the panel keeps the temporary Doorbell-Pair-<MAC4> SoftAP open (10-120 s).",
+        "Seconds the panel keeps the temporary Doorbell-Pair-<MAC4> SoftAP open.",
         10,
         120,
     ),
@@ -413,7 +468,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         10,
-        "Seconds to wait for PAIR_COMPLETE on the building LAN after SoftAP handoff (5-60 s).",
+        "Seconds to wait for PAIR_COMPLETE on the building LAN after SoftAP handoff.",
         5,
         60,
     ),
@@ -423,7 +478,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         120,
-        "Seconds the Doorbell-Setup WPA3-SAE web portal stays open (*<admin>*5#, 30-600 s).",
+        "Seconds the Doorbell-Setup WPA3-SAE web portal stays open (*<admin>*5#).",
         30,
         600,
     ),
@@ -450,7 +505,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Network & Pairing",
         "int",
         100,
-        "Write-ahead reservation block size for monotonic replay counters in NVS (10-10000).",
+        "Write-ahead reservation block size for monotonic replay counters in NVS.",
         10,
         10000,
     ),
@@ -469,7 +524,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Heartbeat",
         "int",
         300,
-        "Seconds between module heartbeats provisioned during pairing (30-3600 s).",
+        "Seconds between module heartbeats provisioned during pairing.",
         30,
         3600,
     ),
@@ -479,7 +534,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Heartbeat",
         "int",
         1,
-        "Number of retries when HEARTBEAT_ACK is not received (0-5).",
+        "Number of retries when HEARTBEAT_ACK is not received.",
         0,
         5,
     ),
@@ -498,7 +553,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "Full brightness level (10-100%).",
+        "Full brightness level.",
         10,
         100,
     ),
@@ -508,7 +563,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         10,
-        "Perceived dim brightness percentage (1-50%, must be < Full brightness).",
+        "Perceived dim brightness percentage (must be < Full brightness).",
         1,
         50,
     ),
@@ -518,7 +573,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         50,
-        "Key-press short flash duration in ms (10-500 ms).",
+        "Key-press short flash duration in ms.",
         10,
         500,
     ),
@@ -528,7 +583,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         200,
-        "Full period of fast blink (error / visual bell, 40-1000 ms).",
+        "Full period of fast blink (error / visual bell).",
         40,
         1000,
     ),
@@ -538,7 +593,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         500,
-        "Full period of medium blink (no-response / button hold, 100-2000 ms).",
+        "Full period of medium blink (no-response / button hold).",
         100,
         2000,
     ),
@@ -548,7 +603,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Full period of 1 Hz slow blink (typing / portal / pairing search, 200-4000 ms).",
+        "Full period of 1 Hz slow blink (typing / portal / pairing search).",
         200,
         4000,
     ),
@@ -558,7 +613,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "ON duration of each pulse in double/triple/sparse flashes (20-500 ms).",
+        "ON duration of each pulse in double/triple/sparse flashes.",
         20,
         500,
     ),
@@ -568,7 +623,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "OFF gap between pulses in double/triple flash patterns (20-500 ms).",
+        "OFF gap between pulses in double/triple flash patterns.",
         20,
         500,
     ),
@@ -578,7 +633,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Total repeat period for double/triple flash patterns (500-5000 ms).",
+        "Total repeat period for double/triple flash patterns.",
         500,
         5000,
     ),
@@ -588,7 +643,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         3000,
-        "Total repeat period for sparse single flash (lockout / network lost, 1000-10000 ms).",
+        "Total repeat period for sparse single flash (lockout / network lost).",
         1000,
         10000,
     ),
@@ -598,7 +653,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         2000,
-        "Duration of solid ON confirmation after a successful operation (200-10000 ms).",
+        "Duration of solid ON confirmation after a successful operation.",
         200,
         10000,
     ),
@@ -608,7 +663,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Duration of fast-blink error indication (200-10000 ms).",
+        "Duration of fast-blink error indication.",
         200,
         10000,
     ),
@@ -618,7 +673,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         3000,
-        "Duration of medium-blink no-response indication (500-10000 ms).",
+        "Duration of medium-blink no-response indication.",
         500,
         10000,
     ),
@@ -632,7 +687,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         4,
-        "Output GPIO driving the apartment bell relay (default 4, boot-safe init per I-22).",
+        "Output GPIO driving the apartment bell relay (boot-safe init per I-22).",
         0,
         33,
         is_gpio_output=True,
@@ -651,7 +706,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         23,
-        "Input GPIO for the indoor door-open push button (default 23).",
+        "Input GPIO for the indoor door-open push button.",
         0,
         39,
         is_gpio_input=True,
@@ -662,7 +717,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         18,
-        "Input GPIO for the hidden pairing button (default 18).",
+        "Input GPIO for the hidden pairing button.",
         0,
         39,
         is_gpio_input=True,
@@ -673,7 +728,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         19,
-        "Input GPIO for the hidden reset button (default 19).",
+        "Input GPIO for the hidden reset button.",
         0,
         39,
         is_gpio_input=True,
@@ -700,7 +755,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "GPIO",
         "int",
         2,
-        "Output GPIO driving the module status LED via LEDC PWM (default 2).",
+        "Output GPIO driving the module status LED via LEDC PWM.",
         0,
         33,
         is_gpio_output=True,
@@ -720,7 +775,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         500,
-        "Milliseconds the bell relay remains energized when rung (100-10000 ms).",
+        "Milliseconds the bell relay remains energized when rung.",
         100,
         10000,
     ),
@@ -738,7 +793,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         100,
-        "Minimum valid press duration for the door-open button (20-2000 ms).",
+        "Minimum valid press duration for the door-open button.",
         20,
         2000,
     ),
@@ -748,7 +803,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         30,
-        "Maximum valid press duration for the door-open button (5-120 s).",
+        "Maximum valid press duration for the door-open button.",
         5,
         120,
     ),
@@ -758,7 +813,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         7,
-        "Start of the valid hold window for hidden pairing and reset buttons (3-20 s).",
+        "Start of the valid hold window for hidden pairing and reset buttons.",
         3,
         20,
     ),
@@ -768,7 +823,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         12,
-        "End of the valid hold window for hidden pairing and reset buttons (5-30 s).",
+        "End of the valid hold window for hidden pairing and reset buttons.",
         5,
         30,
     ),
@@ -778,7 +833,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Bell & Buttons",
         "int",
         15,
-        "Hold duration at which the action is cancelled with a triple flash (8-65 s).",
+        "Hold duration at which the action is cancelled with a triple flash.",
         8,
         65,
     ),
@@ -789,7 +844,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         19500,
-        "UDP port used for all operational and pairing messages (1024-49151).",
+        "UDP port used for all operational and pairing messages.",
         1024,
         49151,
     ),
@@ -799,7 +854,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         400,
-        "Milliseconds to wait for an application-layer UDP ACK before retrying (100-5000 ms).",
+        "Milliseconds to wait for an application-layer UDP ACK before retrying.",
         100,
         5000,
     ),
@@ -809,7 +864,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         1,
-        "Number of dual-path retries when OPEN_DOOR_ACK is not received (0-5).",
+        "Number of dual-path retries when OPEN_DOOR_ACK is not received.",
         0,
         5,
     ),
@@ -819,7 +874,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         10,
-        "Seconds allowed to associate to the building AP and complete PAIR_COMPLETE (5-60 s).",
+        "Seconds allowed to associate to the building AP and complete PAIR_COMPLETE.",
         5,
         60,
     ),
@@ -846,7 +901,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         100,
-        "Write-ahead reservation block size for monotonic replay counters in NVS (10-10000).",
+        "Write-ahead reservation block size for monotonic replay counters in NVS.",
         10,
         10000,
     ),
@@ -864,7 +919,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         300,
-        "Fallback heartbeat interval in seconds if not overridden during pairing (30-3600 s).",
+        "Fallback heartbeat interval in seconds if not overridden during pairing.",
         30,
         3600,
     ),
@@ -874,7 +929,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Network & Heartbeat",
         "int",
         1,
-        "Number of retries when HEARTBEAT_ACK is not received (0-5).",
+        "Number of retries when HEARTBEAT_ACK is not received.",
         0,
         5,
     ),
@@ -885,7 +940,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "Full brightness level (10-100%).",
+        "Full brightness level.",
         10,
         100,
     ),
@@ -895,7 +950,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         10,
-        "Perceived dim brightness percentage in coverage (1-50%, must be < Full brightness).",
+        "Perceived dim brightness percentage in coverage (must be < Full brightness).",
         1,
         50,
     ),
@@ -905,7 +960,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         50,
-        "Short flash duration in ms (10-500 ms).",
+        "Short flash duration in ms.",
         10,
         500,
     ),
@@ -915,7 +970,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         200,
-        "Full period of fast blink (visual bell, 40-1000 ms).",
+        "Full period of fast blink (visual bell).",
         40,
         1000,
     ),
@@ -925,7 +980,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         500,
-        "Full period of medium blink (no-response / pairing button hold, 100-2000 ms).",
+        "Full period of medium blink (no-response / pairing button hold).",
         100,
         2000,
     ),
@@ -935,7 +990,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Full period of 1 Hz slow blink (pairing search, 200-4000 ms).",
+        "Full period of 1 Hz slow blink (pairing search).",
         200,
         4000,
     ),
@@ -945,7 +1000,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "ON duration of each pulse in double/triple/sparse flashes (20-500 ms).",
+        "ON duration of each pulse in double/triple/sparse flashes.",
         20,
         500,
     ),
@@ -955,7 +1010,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         100,
-        "OFF gap between pulses in double/triple flash patterns (20-500 ms).",
+        "OFF gap between pulses in double/triple flash patterns.",
         20,
         500,
     ),
@@ -965,7 +1020,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Total repeat period for double/triple flash patterns (500-5000 ms).",
+        "Total repeat period for double/triple flash patterns.",
         500,
         5000,
     ),
@@ -975,7 +1030,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         3000,
-        "Total repeat period for sparse single flash (out of coverage, 1000-10000 ms).",
+        "Total repeat period for sparse single flash (out of coverage).",
         1000,
         10000,
     ),
@@ -985,7 +1040,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         2000,
-        "Duration of solid ON confirmation after door open or pairing success (200-10000 ms).",
+        "Duration of solid ON confirmation after door open or pairing success.",
         200,
         10000,
     ),
@@ -995,7 +1050,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         1000,
-        "Duration of fast-blink error indication (200-10000 ms).",
+        "Duration of fast-blink error indication.",
         200,
         10000,
     ),
@@ -1005,21 +1060,60 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Status LED",
         "int",
         3000,
-        "Duration of medium-blink no-response indication (500-10000 ms).",
+        "Duration of medium-blink no-response indication.",
         500,
         10000,
     ),
 ]
 
 
-def _sync_params_from_kconfig(kconfig_path: Path, param_lists: List[List[ParamSpec]]) -> None:
-    """Parse Kconfig.projbuild and synchronize default, min_val, and max_val on all ParamSpec objects."""
+def _kconfig_cond(cond: Optional[str], bool_values: Dict[str, bool]) -> Optional[bool]:
+    """Evaluate a Kconfig `if` condition limited to `SYM` / `!SYM`; None when it cannot be evaluated."""
+    if cond is None:
+        return True
+    cond = cond.strip()
+    negate = cond.startswith("!")
+    sym = cond[1:].strip() if negate else cond
+    if not re.fullmatch(r"[A-Z0-9_]+", sym) or sym not in bool_values:
+        return None
+    return bool_values[sym] != negate
+
+
+def _kconfig_pick(items: List[Tuple[Any, Optional[str]]], bool_values: Dict[str, bool]) -> Tuple[bool, Any]:
+    """Return (resolved, value): Kconfig uses the first entry whose condition holds."""
+    for value, cond in items:
+        result = _kconfig_cond(cond, bool_values)
+        if result is None:
+            return False, None
+        if result:
+            return True, value
+    return True, None
+
+
+def _parse_kconfig_default(val_s: str, ktype: Optional[str]) -> Any:
+    if ktype == "bool":
+        return {"y": True, "n": False}.get(val_s)
+    if ktype == "int":
+        try:
+            return int(val_s, 0)
+        except ValueError:
+            return None
+    if ktype == "string":
+        return unescape_quoted(val_s)
+    return None
+
+
+def _sync_params_from_kconfig(kconfig_path: Path, param_lists: List[List[ParamSpec]]) -> List[str]:
+    """Overwrite default/min_val/max_val of every ParamSpec from Kconfig.projbuild.
+
+    Returns warnings for specs that could not be synced, so the hardcoded fallbacks never drift silently.
+    """
     if not kconfig_path.is_file():
-        return
+        return [f"{kconfig_path} not found; using built-in fallback defaults and ranges."]
     try:
         text = kconfig_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return
+    except OSError as exc:
+        return [f"Cannot read {kconfig_path}: {exc}; using built-in fallback defaults and ranges."]
 
     parsed: Dict[str, Dict[str, Any]] = {}
     cur_entry: Optional[Dict[str, Any]] = None
@@ -1037,63 +1131,75 @@ def _sync_params_from_kconfig(kconfig_path: Path, param_lists: List[List[ParamSp
                 continue
             in_help = False
 
-        m_cfg = re.match(r"^config\s+([A-Z0-9_]+)\b", stripped)
+        m_cfg = re.match(r"^(?:menu)?config\s+([A-Z0-9_]+)\b", stripped)
         if m_cfg:
-            cur_entry = {"type": None, "default": None, "range": None}
+            cur_entry = {"type": None, "defaults": [], "ranges": []}
             parsed[m_cfg.group(1)] = cur_entry
             continue
 
-        if stripped.startswith(("menu ", "endmenu", "choice ", "endchoice")):
+        if stripped.startswith(("menu ", "endmenu", "choice", "endchoice", "if ", "endif", "source ", "comment ")):
             cur_entry = None
             continue
 
         if cur_entry is None:
             continue
 
-        m_type = re.match(r"^(int|bool|string)\b", stripped)
+        m_type = re.match(r"^(int|bool|string|hex)\b", stripped)
         if m_type:
             cur_entry["type"] = m_type.group(1)
             continue
 
-        m_range = re.match(r"^range\s+(-?\d+)\s+(-?\d+)\b", stripped)
+        m_range = re.match(r"^range\s+(-?\w+)\s+(-?\w+)(?:\s+if\s+(.+))?$", stripped)
         if m_range:
-            cur_entry["range"] = (int(m_range.group(1)), int(m_range.group(2)))
+            try:
+                bounds = (int(m_range.group(1), 0), int(m_range.group(2), 0))
+            except ValueError:
+                bounds = None  # symbolic bound: unresolvable, recorded so the pick fails safely
+            cur_entry["ranges"].append((bounds, m_range.group(3)))
             continue
 
-        m_def = re.match(r"^default\s+(.+)$", stripped)
+        m_def = re.match(r"^default\s+(\".*\"|\S+)(?:\s+if\s+(.+))?$", stripped)
         if m_def:
-            val_s = m_def.group(1).strip()
-            ktype = cur_entry.get("type")
-            if ktype == "bool":
-                cur_entry["default"] = val_s == "y"
-            elif ktype == "int":
-                try:
-                    cur_entry["default"] = int(val_s)
-                except ValueError:
-                    pass
-            elif ktype == "string":
-                if val_s.startswith('"') and val_s.endswith('"') and len(val_s) >= 2:
-                    cur_entry["default"] = re.sub(r"\\(.)", r"\1", val_s[1:-1])
-                else:
-                    cur_entry["default"] = val_s
+            cur_entry["defaults"].append((m_def.group(1), m_def.group(2)))
             continue
 
-        if stripped == "help":
+        if stripped == "help" or stripped == "---help---":
             in_help = True
             help_indent = indent + 1
 
+    # Bool symbols with an unconditional first default, used to evaluate `if SYM` conditions.
+    bool_values: Dict[str, bool] = {}
+    for name, meta in parsed.items():
+        if meta["type"] == "bool" and meta["defaults"] and meta["defaults"][0][1] is None:
+            val = _parse_kconfig_default(meta["defaults"][0][0], "bool")
+            if val is not None:
+                bool_values[name] = val
+
+    warnings: List[str] = []
     for plist in param_lists:
         for spec in plist:
             meta = parsed.get(spec.kconfig)
             if not meta:
+                warnings.append(f"{spec.kconfig} is not defined in Kconfig.projbuild; using built-in fallback.")
                 continue
-            if meta["default"] is not None:
-                spec.default = meta["default"]
-            if meta["range"] is not None and spec.kind == "int":
-                spec.min_val, spec.max_val = meta["range"]
+            ok, raw_default = _kconfig_pick(meta["defaults"], bool_values)
+            value = _parse_kconfig_default(raw_default, meta["type"]) if ok and raw_default is not None else None
+            if ok and raw_default is None and meta["type"] == "bool":
+                value = False  # Kconfig: a bool without an applicable default is n
+            if value is not None:
+                spec.default = value
+            else:
+                warnings.append(f"{spec.kconfig}: Kconfig default not resolvable; using built-in fallback.")
+            if spec.kind == "int":
+                ok, bounds = _kconfig_pick(meta["ranges"], bool_values)
+                if ok and bounds is not None:
+                    spec.min_val, spec.max_val = bounds
+                elif meta["ranges"]:
+                    warnings.append(f"{spec.kconfig}: Kconfig range not resolvable; using built-in fallback.")
+    return warnings
 
 
-_sync_params_from_kconfig(KCONFIG_PROJBUILD_PATH, [PANEL_PARAMS, APARTMENT_PARAMS])
+KCONFIG_SYNC_WARNINGS = _sync_params_from_kconfig(KCONFIG_PROJBUILD_PATH, [PANEL_PARAMS, APARTMENT_PARAMS])
 
 
 class ToolTip:
@@ -1203,6 +1309,9 @@ class SerialMonitorWindow(tk.Toplevel):
         self._rx_queue: queue.Queue[str] = queue.Queue()
         self._redact_lock = threading.Lock()
         self._redact_tokens: List[str] = []
+        # While a doorbell_wifi command is in flight, the REPL echo (possibly redrawn char-by-char and
+        # horizontally scrolled by linenoise) can carry fragments of secrets, so only known-safe lines pass.
+        self._echo_mute_until = 0.0
 
         top_bar = ttk.Frame(self, padding=(8, 6))
         top_bar.pack(fill=tk.X)
@@ -1255,11 +1364,27 @@ class SerialMonitorWindow(tk.Toplevel):
             except serial.SerialException as exc:
                 self._append(f"\n[Error sending command: {exc}]\n")
 
-    @staticmethod
-    def _escape_console_arg(val: str) -> str:
-        return val.replace("\\", "\\\\").replace('"', '\\"')
+    # Panel console output that can never contain doorbell_wifi arguments (panel_console.c printf/ESP_LOG)
+    _ECHO_SAFE_LINE_RE = re.compile(r"^\s*(?:panel> )?(?:Error:|Usage:|Wi-Fi credentials saved|[IWE] \(\d+\) )")
+    _ECHO_MUTE_S = 3.0
 
-    def _scrub_rx_text(self, text: str) -> str:
+    def _is_echo_muted(self) -> bool:
+        with self._redact_lock:
+            return time.monotonic() < self._echo_mute_until
+
+    def _scrub_rx_text(self, text: str, echo_muted: bool) -> str:
+        """Redact secrets from received console text (I-25). `text` must already be ANSI-stripped."""
+        if echo_muted:
+            kept: List[str] = []
+            suppressed = False
+            for line in text.splitlines(keepends=True):
+                if self._ECHO_SAFE_LINE_RE.match(line):
+                    kept.append(line)
+                elif line.strip():
+                    suppressed = True
+            if suppressed:
+                kept.insert(0, "[console echo suppressed]\n")
+            text = "".join(kept)
         text = re.sub(
             r"doorbell_wifi\s+[^\r\n]*",
             "doorbell_wifi [credentials redacted]",
@@ -1293,12 +1418,13 @@ class SerialMonitorWindow(tk.Toplevel):
             return
         if self._ser and self._ser.is_open:
             try:
-                esc_ssid = self._escape_console_arg(ssid)
-                esc_pw = self._escape_console_arg(pw)
+                esc_ssid = escape_quoted(ssid)
+                esc_pw = escape_quoted(pw)
                 with self._redact_lock:
                     for tok in (admin, pw, esc_pw):
                         if tok and tok not in self._redact_tokens:
                             self._redact_tokens.append(tok)
+                    self._echo_mute_until = time.monotonic() + self._ECHO_MUTE_S
                 # Quote arguments and escape embedded quotes/backslashes; never log admin code or password (I-25)
                 cmd = f'\r\ndoorbell_wifi "{admin}" "{esc_ssid}" "{esc_pw}"\r\n'
                 self._ser.write(cmd.encode("utf-8"))
@@ -1323,28 +1449,33 @@ class SerialMonitorWindow(tk.Toplevel):
         try:
             self._ser = serial.Serial(self.port, baudrate=115200, timeout=0.08)
             self._rx_queue.put(f"[Connected to {self.port} at 115200 baud]\n")
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             pending = ""
+            pending_muted = False
             last_rx = time.monotonic()
             while not self._stop_evt.is_set():
                 data = self._ser.read(512)
                 if data:
-                    chunk = data.decode("utf-8", errors="replace")
-                    # Strip ANSI escape codes for clean display
-                    chunk = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", chunk)
-                    pending += chunk
+                    pending += decoder.decode(data)
+                    # Text received while a doorbell_wifi echo is expected stays filtered until it is emitted
+                    pending_muted = pending_muted or self._is_echo_muted()
                     last_rx = time.monotonic()
                     if "\n" in pending:
                         lines = pending.splitlines(keepends=True)
-                        if not lines[-1].endswith(("\n", "\r")):
+                        if not lines[-1].endswith("\n"):
                             pending = lines.pop()
                         else:
                             pending = ""
-                        out = self._scrub_rx_text("".join(lines))
+                        # Strip ANSI on whole lines so escape sequences split across reads are removed too
+                        out = self._scrub_rx_text(strip_ansi("".join(lines)), pending_muted)
+                        if not pending:
+                            pending_muted = False
                         if out:
                             self._rx_queue.put(out)
                 elif pending and (time.monotonic() - last_rx) >= 0.15:
-                    out = self._scrub_rx_text(pending)
+                    out = self._scrub_rx_text(strip_ansi(pending), pending_muted)
                     pending = ""
+                    pending_muted = False
                     if out:
                         self._rx_queue.put(out)
         except Exception as exc:
@@ -1769,6 +1900,8 @@ class DoorbellFlasherApp:
         self._build_layout()
         self._populate_config_panel()
         self._update_last_build_label()
+        for warning in KCONFIG_SYNC_WARNINGS:
+            self.log(f"[Kconfig] WARNING: {warning}\n")
 
         self.root.after(50, self._process_ui_queue)
         # Trigger initial port detection shortly after window appears
@@ -1819,11 +1952,7 @@ class DoorbellFlasherApp:
                 if spec.kind == "bool":
                     vars_map[spec.kconfig].set(raw == "y")
                 elif spec.kind == "str":
-                    if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
-                        inner = re.sub(r"\\(.)", r"\1", raw[1:-1])
-                    else:
-                        inner = raw
-                    vars_map[spec.kconfig].set(inner)
+                    vars_map[spec.kconfig].set(unescape_quoted(raw))
                 else:
                     vars_map[spec.kconfig].set(raw)
 
@@ -2310,10 +2439,6 @@ class DoorbellFlasherApp:
         ).start()
 
     @staticmethod
-    def _escape_kconfig_str(val: Any) -> str:
-        return str(val).replace("\\", "\\\\").replace('"', '\\"')
-
-    @staticmethod
     def _apply_kconfig_to_sdkconfig(sdkconfig_path: Path, specs: List[ParamSpec], values: Dict[str, Any]) -> None:
         """Update CONFIG_DOORBELL_* entries in sdkconfig in-place for fast incremental compilation."""
         lines = sdkconfig_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -2342,7 +2467,7 @@ class DoorbellFlasherApp:
                     else:
                         new_lines.append(f"# CONFIG_{matched_key} is not set")
                 elif spec.kind == "str":
-                    escaped = DoorbellFlasherApp._escape_kconfig_str(val)
+                    escaped = escape_quoted(val)
                     new_lines.append(f'CONFIG_{matched_key}="{escaped}"')
                 else:
                     new_lines.append(f"CONFIG_{matched_key}={val}")
@@ -2358,7 +2483,7 @@ class DoorbellFlasherApp:
                     else:
                         new_lines.append(f"# CONFIG_{spec.kconfig} is not set")
                 elif spec.kind == "str":
-                    escaped = DoorbellFlasherApp._escape_kconfig_str(val)
+                    escaped = escape_quoted(val)
                     new_lines.append(f'CONFIG_{spec.kconfig}="{escaped}"')
                 else:
                     new_lines.append(f"CONFIG_{spec.kconfig}={val}")
@@ -2475,7 +2600,19 @@ class DoorbellFlasherApp:
         cwd: Path,
         env: Optional[Dict[str, str]] = None,
         progress_cb: Optional[Callable[[float], None]] = None,
+        progress_weights: Optional[List[int]] = None,
     ) -> int:
+        """Run a command, stream its output to the log, and report write-flash progress.
+
+        esptool 5.x prints one "Writing at 0x... [bar]  45.2% ..." line per update and restarts at 0%
+        for every image; `progress_weights` (bytes per image, in write order) folds them into one
+        monotonic 0-100 value.
+        """
+        weights = [max(1, w) for w in (progress_weights or [1])]
+        total_weight = float(sum(weights))
+        part_idx = 0
+        last_part_pct = 0.0
+        last_overall = 0.0
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc = subprocess.Popen(
             cmd,
@@ -2492,11 +2629,17 @@ class DoorbellFlasherApp:
         for line in proc.stdout:
             self.log(line)
             if progress_cb:
-                # Match esptool v5.6.0 percentage ("  45.2% 16.0kB/...") or esptool v4 ("( 45 %)")
-                m_pct = re.search(r"(\d+(?:\.\d+)?)\s*%", line)
+                m_pct = _WRITE_PROGRESS_RE.search(line)
                 if m_pct:
-                    pct_val = max(0.0, min(100.0, float(m_pct.group(1))))
-                    progress_cb(pct_val)
+                    pct = max(0.0, min(100.0, float(m_pct.group(1))))
+                    if pct + 5.0 < last_part_pct and part_idx < len(weights) - 1:
+                        part_idx += 1  # percentage restarted: esptool moved on to the next image
+                    last_part_pct = pct
+                    done = sum(weights[:part_idx]) + weights[part_idx] * pct / 100.0
+                    overall = min(100.0, 100.0 * done / total_weight)
+                    if overall > last_overall:
+                        last_overall = overall
+                        progress_cb(overall)
         return proc.wait()
 
     # ---- Right Column: Port Detection & Device Operations ----
@@ -2515,8 +2658,10 @@ class DoorbellFlasherApp:
 
         for card in self._device_cards:
             card._close_monitor_if_open()
-            card.destroy()
         self._device_cards.clear()
+        # Clear every child (old cards and any previous "no ports" label) before repopulating
+        for child in self.cards_inner.winfo_children():
+            child.destroy()
 
         ports = sorted(serial.tools.list_ports.comports(), key=lambda p: p.device)
         if not ports:
@@ -2531,15 +2676,14 @@ class DoorbellFlasherApp:
             self.log("[Detect] No COM ports found.\n")
             return
 
-        for child in self.cards_inner.winfo_children():
-            child.destroy()
-
         for p in ports:
             desc = p.description or "Serial Port"
             # Strip trailing "(COMx)" if Windows driver already appended it
             desc = re.sub(r"\s*\(COM\d+\)\s*$", "", desc)
             card = DeviceCard(self.cards_inner, self, p.device, desc)
             card.pack(fill=tk.X, pady=(0, 10))
+            # Lock the card until its own probe has released the COM port
+            card.set_busy(True)
             self._device_cards.append(card)
 
         threading.Thread(target=self._worker_probe_ports, args=(list(self._device_cards),), daemon=True).start()
@@ -2547,28 +2691,13 @@ class DoorbellFlasherApp:
     def _worker_probe_ports(self, cards: List[DeviceCard]) -> None:
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        probe_script = (
-            "import sys\n"
-            "from esptool.cmds import detect_chip\n"
-            "port = sys.argv[1]\n"
-            "with detect_chip(port=port, connect_attempts=2) as esp:\n"
-            "    desc = esp.get_chip_description()\n"
-            "    mac = esp.read_mac('BASE_MAC') or esp.read_mac()\n"
-            "    mac_s = ':'.join(f'{b:02x}' for b in mac)\n"
-            "    sb_fn = getattr(esp, 'get_secure_boot_enabled', None)\n"
-            "    fe_fn = getattr(esp, 'get_flash_encryption_enabled', None)\n"
-            "    sb = bool(sb_fn()) if callable(sb_fn) else False\n"
-            "    fe = bool(fe_fn()) if callable(fe_fn) else False\n"
-            "    esp.hard_reset()\n"
-            "    print(f'PROBE_INFO|{desc}|{mac_s}|{\"on\" if sb else \"off\"}|{\"on\" if fe else \"off\"}')\n"
-        )
 
         for card in cards:
             port = card.port
             self.log(f"[{port}] Probing ESP32 via esptool...\n")
             try:
                 proc = subprocess.run(
-                    [python_exe, "-c", probe_script, port],
+                    [python_exe, "-c", ESPTOOL_PROBE_SCRIPT, port],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -2577,45 +2706,38 @@ class DoorbellFlasherApp:
                     creationflags=creationflags,
                 )
                 out = (proc.stdout or "") + (proc.stderr or "")
-                probe_m = re.search(r"PROBE_INFO\|([^|]+)\|([^|]+)\|([^|]+)\|([^\r\n]+)", out)
-                chip_m = re.search(r"Chip (?:type:|is)\s*([^\r\n]+)", out)
-                mac_m = re.search(r"MAC:\s*([0-9a-fA-F:]{17})", out)
+                probe_m = re.search(r"^PROBE_INFO\|([^|]+)\|([^|]+)\|([^|]+)\|([^\r\n]+)", out, re.M)
+                err_m = re.search(r"^PROBE_ERROR\|([^\r\n]+)", out, re.M)
+                warn_m = re.search(r"^PROBE_WARN\|([^\r\n]+)", out, re.M)
 
                 if probe_m:
-                    chip_str = probe_m.group(1).strip()
-                    mac_str = probe_m.group(2).strip().lower()
-                    sb_str = probe_m.group(3).strip()
-                    fe_str = probe_m.group(4).strip()
-                    info_line = (
-                        f"{chip_str} | MAC {mac_str} | "
-                        f"secure boot {sb_str} | flash encryption {fe_str}"
-                    )
+                    chip_str, mac_str, sb_str, fe_str = (g.strip() for g in probe_m.groups())
+                    info_line = f"{chip_str} | MAC {mac_str.lower()} | secure boot {sb_str} | flash encryption {fe_str}"
                     self.log(f"[{port}] {info_line}\n")
-                    if "Hard resetting via RTS pin..." in out:
-                        self.log(f"[{port}] Hard resetting via RTS pin...\n")
-                    self.post_ui(lambda c=card, s=info_line: c.chip_info_var.set(s) if c.winfo_exists() else None)
-                    self.post_ui(lambda c=card: c.set_status("Detect done", "#1b7e2b", 0.0))
-                elif chip_m and mac_m:
-                    chip_str = chip_m.group(1).strip()
-                    mac_str = mac_m.group(1).lower()
-                    info_line = f"{chip_str} | MAC {mac_str} | secure boot off | flash encryption off"
-                    self.log(f"[{port}] {info_line}\n")
-                    self.post_ui(lambda c=card, s=info_line: c.chip_info_var.set(s) if c.winfo_exists() else None)
-                    self.post_ui(lambda c=card: c.set_status("Detect done", "#1b7e2b", 0.0))
+                    if warn_m:
+                        self.log(f"[{port}] Warning: {warn_m.group(1)}\n")
+                    chip_text, status, color = info_line, "Detect done", "#1b7e2b"
+                elif err_m and _PROBE_NO_CHIP_RE.search(err_m.group(1)):
+                    self.log(f"[{port}] No ESP32 bootloader response: {err_m.group(1)}\n")
+                    chip_text = "No ESP32 response (check USB cable or hold BOOT)"
+                    status, color = "No response", "#b33a3a"
                 else:
-                    self.log(f"[{port}] Could not read ESP32 bootloader response.\n")
-                    self.post_ui(
-                        lambda c=card: (
-                            c.chip_info_var.set("No ESP32 response (check USB cable or hold BOOT)")
-                            if c.winfo_exists()
-                            else None
-                        )
-                    )
-                    self.post_ui(lambda c=card: c.set_status("No response", "#b33a3a", 0.0))
+                    # Tooling failure (wrong venv, esptool API change, crash): show the real cause
+                    reason = err_m.group(1) if err_m else f"probe exited with code {proc.returncode}"
+                    tail = "\n".join(out.strip().splitlines()[-15:])
+                    self.log(f"[{port}] Probe failed: {reason}\n" + (f"{tail}\n" if tail and not err_m else ""))
+                    chip_text = f"Probe failed: {reason}"
+                    status, color = "Probe error", "#b33a3a"
             except Exception as exc:
                 self.log(f"[{port}] Probe error: {exc}\n")
-                self.post_ui(lambda c=card, e=exc: c.chip_info_var.set(f"Probe failed: {e}") if c.winfo_exists() else None)
-                self.post_ui(lambda c=card: c.set_status("Error", "#b33a3a", 0.0))
+                chip_text, status, color = f"Probe failed: {exc}", "Probe error", "#b33a3a"
+
+            def _done(c: DeviceCard = card, t: str = chip_text, s: str = status, col: str = color) -> None:
+                c.chip_info_var.set(t)
+                c.set_status(s, col, 0.0)
+                c.set_busy(False)
+
+            self.post_ui(_done)
 
         def _finish() -> None:
             self._detecting = False
@@ -2641,6 +2763,7 @@ class DoorbellFlasherApp:
                     app_part_file = tmp / "app.bin"
                     boot_part_file.write_bytes(boot_part)
                     app_part_file.write_bytes(app_part)
+                    weights = [len(boot_part), len(app_part)]
 
                     cmd = [
                         python_exe,
@@ -2693,11 +2816,13 @@ class DoorbellFlasherApp:
                         "0x10000",
                         str(fw_path),
                     ]
+                    weights = [1]
 
                 rc = self._run_logged_cmd(
                     cmd,
                     cwd=PROJECT_ROOT,
                     progress_cb=lambda pct: self.post_ui(lambda p=pct: card.set_status(f"Flashing {int(p)}%...", "#b36b00", p)),
+                    progress_weights=weights,
                 )
                 if rc == 0:
                     self.log(f"[{port}] Firmware flash complete.\n")
@@ -2853,14 +2978,11 @@ class DoorbellFlasherApp:
                 ser.reset_input_buffer()
                 ser.write(b"\r\ndoorbell_status\r\n")
                 deadline = time.monotonic() + 1.5
-                collected: List[str] = []
+                collected = bytearray()
                 while time.monotonic() < deadline:
-                    chunk = ser.read(512)
-                    if chunk:
-                        text = chunk.decode("utf-8", errors="replace")
-                        text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
-                        collected.append(text)
-                full_out = "".join(collected).strip()
+                    collected += ser.read(512)
+                # Decode and strip ANSI once on the whole capture so split UTF-8 / escape sequences are handled
+                full_out = strip_ansi(collected.decode("utf-8", errors="replace")).strip()
                 if full_out:
                     self.log(f"[{port}] Status response:\n{full_out}\n")
                     self.post_ui(lambda: card.set_status("Scan OK (panel CLI)", "#1b7e2b", 100.0))
@@ -2872,12 +2994,8 @@ class DoorbellFlasherApp:
                     ser.rts = False
                     deadline = time.monotonic() + 2.2
                     while time.monotonic() < deadline:
-                        chunk = ser.read(512)
-                        if chunk:
-                            text = chunk.decode("utf-8", errors="replace")
-                            text = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
-                            collected.append(text)
-                    boot_out = "".join(collected).strip()
+                        collected += ser.read(512)
+                    boot_out = strip_ansi(collected.decode("utf-8", errors="replace")).strip()
                     if boot_out:
                         self.log(f"[{port}] Boot log:\n{boot_out}\n")
                         self.post_ui(lambda: card.set_status("Scan OK (boot log)", "#1b7e2b", 100.0))
