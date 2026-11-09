@@ -24,3 +24,8 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Flasher GUI merged firmware output binaries
+flasher/builds/*.bin
+!flasher/builds/.gitkeep
+
+
