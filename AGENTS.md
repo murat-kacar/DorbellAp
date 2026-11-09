@@ -39,6 +39,10 @@ Normative companion specifications:
 4. **Secret Redaction in Logs & UI (`I-25`, `I-47`):**
    - Never log, print, or echo admin codes, user codes, Wi-Fi passphrases, cryptographic keys, or nonces at any
      `ESP_LOG*` level or in HTTP responses. When adapting ESP-IDF Wi-Fi examples, strip all passphrase format strings.
+5. **Single-Branch Git Policy (Mandatory):**
+   - Maintain strictly a single Git branch (`master`) across the entire project lifecycle. Never create additional
+     branches (`git branch`, `git checkout -b`, `git switch -c`, git worktrees, or branched subagent workspaces); all
+     work and commits MUST be performed linearly on `master`.
 
 ---
 
