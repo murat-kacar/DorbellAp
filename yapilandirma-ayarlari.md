@@ -22,7 +22,7 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 | UDP port | 19500 | Panel ve daire modüllerinin UDP haberleşmesinde kullandığı port (IANA listesinde atanmamış User Port aralığındadır ve lwIP ephemeral port aralığı olan 49152–65535 ile çakışmaz). |
 | Set a Wi-Fi country code | Kapalı | Açılırsa aşağıdaki ülke kodu uygulanır. Kapalıyken ESP-IDF'in varsayılan ülke ayarı (`01` — kanal 1–11 aktif, kanal 12–13 pasif tarama) kullanılır. |
 | Country code | (boş) | İki harfli ülke kodu, örn. `TR` (kanal 1–13, maks. 20 dBm). Bina AP'si kanal 12 veya 13'te çalışıyorsa açılmalıdır. |
-| Restrict the station interface to 802.11b | Kapalı | Açılırsa cihaz bina AP'sine yalnızca 802.11b hızlarıyla (1–11 Mbps) bağlanır. Düşük hızlar daha zayıf sinyalde çalıştığı için menzili artırabilir. Bina AP'sinde "802.11b'yi kapat" veya 11 Mbps üzeri asgari hız ayarı varsa cihaz bağlanamaz. Kapalıyken ESP-IDF varsayılanı (802.11b/g/n) kullanılır. |
+| Restrict the station interface to 802.11b | Açık | Cihaz bina AP'sine yalnızca 802.11b hızlarıyla (1–11 Mbps) bağlanır. Düşük hızlar daha zayıf sinyalde çalıştığı için menzili artırabilir. Bina AP'sinde "802.11b'yi kapat" veya 11 Mbps üzeri asgari hız ayarı varsa cihaz bağlanamaz; bu durumda AP ayarı değiştirilmeli ya da bu seçenek kapatılmalıdır. Kapatılırsa ESP-IDF varsayılanı (802.11b/g/n) kullanılır. |
 
 - **Bina erişim noktası (AP) ve ağ kurulum kontrol listesi:**
   1. **Görünür SSID ve Sabit Kanal:** 2,4 GHz bandında birbiriyle çakışmayan **1, 6 veya 11.** kanallardan biri sabit
@@ -36,6 +36,9 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
   4. **DHCP Kapasitesi:** DHCP sunucusu açık olmalı ve IP havuzu tüm daire modüllerini + paneli kapsayacak büyüklükte
      olmalıdır (240'tan fazla cihaz varsa `/23` alt ağı kullanılmalıdır). Panel için DHCP'de sabit IP ayrılması
      (DHCP reservation) önerilir. Cihazlar ağda `doorbell-panel` ve `doorbell-apt-012` biçiminde görünür.
+  5. **802.11b Hızları Açık:** Cihazlar varsayılan olarak yalnızca 802.11b hızlarıyla (1–11 Mbps) bağlanır. Erişim
+     noktasında "802.11b'yi devre dışı bırak", "legacy hızları kapat" veya 11 Mbps üzeri asgari temel hız (minimum
+     basic rate) ayarı **kapalı** olmalıdır.
 - **En güçlü erişim noktasını seçme:** Cihazlar tüm kanalları tarayıp (`WIFI_ALL_CHANNEL_SCAN`) sinyali en güçlü olan
   erişim noktasına (`WIFI_CONNECT_AP_BY_SIGNAL`) bağlanır; bağlantı koparsa üstel artan bekleme süresiyle (1–60 s)
   sürekli yeniden bağlanmayı dener.

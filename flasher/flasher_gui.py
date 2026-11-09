@@ -504,7 +504,7 @@ PANEL_PARAMS: List[ParamSpec] = [
         "Station 802.11b only",
         "Network & Pairing",
         "bool",
-        False,
+        True,
         "Use only 802.11b rates (1-11 Mbps) for longer reach. The building AP must accept 802.11b clients.",
     ),
     ParamSpec(
@@ -908,7 +908,7 @@ APARTMENT_PARAMS: List[ParamSpec] = [
         "Station 802.11b only",
         "Network & Heartbeat",
         "bool",
-        False,
+        True,
         "Use only 802.11b rates (1-11 Mbps) for longer reach. The building AP must accept 802.11b clients.",
     ),
     ParamSpec(

@@ -61,6 +61,8 @@ Normative companion specifications:
        configuration `TR` because default country `"01"` scans channels `12–13` passively).
     2. **Client isolation (AP isolation) DISABLED**, multicast/broadcast filtering DISABLED, proxy-ARP DISABLED.
     3. **WPA2-PSK (AES-CCMP) or WPA2/WPA3 transition mode** (WEP/TKIP are rejected by ESP-IDF default authmode threshold).
+       **802.11b rates enabled** (no "disable 802.11b" / minimum basic rate > 11 Mbps), because stations run
+       802.11b-only by default (`I-70` item 5).
     4. **DHCP server enabled** with a lease pool and AP association table sized for `N_apartments + 1 (panel) +
        infrastructure` (use a `/23` subnet if $>240$ hosts). Assign a static DHCP reservation for the panel MAC.
 - **Device Roles & Pinned Platform Versions (`I-49`, `I-55`):**
@@ -241,6 +243,9 @@ Normative companion specifications:
   3. `CONFIG_NVS_FLASH_VERIFY_ERASE=y` (default `n`; storage reliability).
   4. Runtime Wi-Fi API settings: `esp_wifi_set_ps(WIFI_PS_NONE)`, `esp_wifi_set_storage(WIFI_STORAGE_RAM)`,
      `WIFI_ALL_CHANNEL_SCAN` + `WIFI_CONNECT_AP_BY_SIGNAL`, and `.max_connection = 4` on SoftAP.
+  5. `CONFIG_DOORBELL_WIFI_STA_11B_ONLY=y` (ESP-IDF default protocol is 802.11b/g/n): the station interface runs
+     `esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B)` so links use the low-SNR DSSS/CCK rates for longer
+     reach. The building AP must accept 802.11b clients (no "disable 802.11b" / minimum basic rate > 11 Mbps).
 
 ---
 

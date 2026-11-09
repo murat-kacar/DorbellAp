@@ -16,8 +16,8 @@ kurulumda farklı ayarlanmış olabilir (bkz. [Yapılandırma Ayarları](yapilan
   binalarda kapsama alanını genişletmek için aynı ağ adını (SSID) ve şifresini yayınlayan kablolu erişim noktaları veya
   köprü (bridge) modunda çalışan sinyal güçlendiriciler kullanılabilir.
 - **Bina erişim noktası (AP) gereksinimleri:** 2,4 GHz bandında görünür SSID (kanal 1, 6 veya 11), WPA2/WPA3 şifreleme,
-  DHCP sunucusu açık (daire sayısı kadar IP havuzu ile) ve **istemci izolasyonu (client/AP isolation) kapalı**
-  olmalıdır.
+  DHCP sunucusu açık (daire sayısı kadar IP havuzu ile), **istemci izolasyonu (client/AP isolation) kapalı** ve
+  **802.11b hızları açık** (erişim noktasında "802.11b'yi kapat" ayarı kapalı) olmalıdır.
 - Sistem yerel ağda kapalıdır: internete veya buluta bağlanmaz.
 - Standart enerji varken açılan (fail-secure) elektrikli kilit karşılığı kullanıldığında, elektrik kesildiğinde kapı
   kilitli kalır.
