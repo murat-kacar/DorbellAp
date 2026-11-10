@@ -1,5 +1,4 @@
 #include "doorbell_storage.h"
-#include "doorbell_config_checks.h"
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
