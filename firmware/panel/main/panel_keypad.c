@@ -8,6 +8,7 @@
 #include "iot_button.h"
 #include "button_gpio.h"
 #include "button_matrix.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "panel_keypad";
 
@@ -144,8 +145,8 @@ static bool ct_equal_code(const char *input, size_t input_len, const char *store
 
     int diff = mbedtls_ct_memcmp(a, b, sizeof(a));
     bool len_ok = (input_len == required_len) && (stored_len == required_len);
-    memset_explicit(a, 0, sizeof(a));
-    memset_explicit(b, 0, sizeof(b));
+    mbedtls_platform_zeroize(a, sizeof(a));
+    mbedtls_platform_zeroize(b, sizeof(b));
     return (diff == 0) && len_ok;
 }
 
@@ -400,7 +401,7 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
-            memset_explicit(&next, 0, sizeof(next));
+            mbedtls_platform_zeroize(&next, sizeof(next));
             break;
         }
         case '4': {
@@ -420,7 +421,7 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
-            memset_explicit(&next, 0, sizeof(next));
+            mbedtls_platform_zeroize(&next, sizeof(next));
             break;
         }
         case '5':
@@ -468,7 +469,7 @@ static void process_key_locked(char ch)
         local_seq[local_len] = '\0';
         clear_keypad_buffer();
         evaluate_sequence_locked(local_seq, local_len);
-        memset_explicit(local_seq, 0, sizeof(local_seq));
+        mbedtls_platform_zeroize(local_seq, sizeof(local_seq));
     } else {
         if (s_key_len + 1 < KEYPAD_BUF_MAX) {
             s_key_buf[s_key_len++] = ch;

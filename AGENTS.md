@@ -41,9 +41,9 @@ Normative companion specifications:
    - Never log, print, or echo admin codes, user codes, Wi-Fi passphrases, cryptographic keys, or nonces at any
      `ESP_LOG*` level or in HTTP responses. When adapting ESP-IDF Wi-Fi examples, strip all passphrase format strings.
    - Wipe local buffers holding such secrets (keys, codes, passphrases, provisioning blobs) on every exit path with
-     C23 `memset_explicit()` (picolibc); a plain `memset()` on a dying local may be removed by the optimizer.
-     `doorbell_protocol` is also built by the host compiler for the `linux` test target and uses
-     `mbedtls_platform_zeroize()` instead.
+     `mbedtls_platform_zeroize()` (`mbedtls/platform_util.h`); a plain `memset()` on a dying local may be removed by
+     the optimizer. Do not use C23 `memset_explicit()`: the ESP-IDF v6.1 toolchain's picolibc never declares it
+     (its `__ISO_C_VISIBLE` stops at 2020), and the host compiler of the `linux` test target may lack it too.
 5. **Single-Branch Git Policy (Mandatory):**
    - Maintain strictly a single Git branch (`master`) across the entire project lifecycle. Never create additional
      branches (`git branch`, `git checkout -b`, `git switch -c`, git worktrees, or branched subagent workspaces); all

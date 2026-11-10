@@ -12,6 +12,7 @@
 #include "doorbell_captive_dns.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "panel_portal";
 
@@ -301,7 +302,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     fields_ok = extract_form_field(body, "password", new_pass, sizeof(new_pass)) && fields_ok;
     fields_ok = extract_form_field(body, "net", net_sel, sizeof(net_sel)) && fields_ok;
     fields_ok = extract_form_field(body, "gen", gen_str, sizeof(gen_str)) && fields_ok;
-    memset_explicit(body, 0, sizeof(body));
+    mbedtls_platform_zeroize(body, sizeof(body));
 
     /* A network picked from the list is identified by its index in the scan generation the page was built from,
      * so the exact SSID bytes are used (no re-encoding through the browser) and a list refreshed in the meantime
@@ -314,7 +315,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         uint32_t gen = 0;
         size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, NULL);
         if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen || !nets[idx].supports_11b) {
-            memset_explicit(new_pass, 0, sizeof(new_pass));
+            mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
             doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             httpd_resp_set_type(req, "text/html; charset=utf-8");
             httpd_resp_sendstr(req,
@@ -332,7 +333,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     size_t ssid_len = strlen(new_ssid);
     size_t pass_len = strlen(new_pass);
     if (!fields_ok || ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
-        memset_explicit(new_pass, 0, sizeof(new_pass));
+        mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
         httpd_resp_sendstr(req,
@@ -361,13 +362,13 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     s_portal_testing = false;
     if (s_portal_abort || g_panel_mode != MODE_PORTAL) {
         /* Portal is being stopped: panel_portal_stop() restores the committed credentials (s_sta_cfg_untested) */
-        memset_explicit(new_pass, 0, sizeof(new_pass));
+        mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
         return ESP_FAIL;
     }
     if (wait_err == ESP_OK) {
         /* Connection succeeded: commit new credentials to NVS and close portal */
         if (!portal_take_mutex_or_abort()) {
-            memset_explicit(new_pass, 0, sizeof(new_pass));
+            mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
             return ESP_FAIL;
         }
         char prev_ssid[33];
@@ -380,13 +381,13 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         strncpy(g_panel_cfg.wifi_ssid, new_ssid, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, new_pass, sizeof(g_panel_cfg.wifi_pass) - 1);
         esp_err_t save_err = doorbell_storage_panel_save_cfg(&g_panel_cfg);
-        memset_explicit(new_pass, 0, sizeof(new_pass));
+        mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
 
         if (save_err != ESP_OK) {
             ESP_LOGE(TAG, "NVS save failed for new Wi-Fi credentials (%s) — rolling back", esp_err_to_name(save_err));
             memcpy(g_panel_cfg.wifi_ssid, prev_ssid, sizeof(g_panel_cfg.wifi_ssid));
             memcpy(g_panel_cfg.wifi_pass, prev_pass, sizeof(g_panel_cfg.wifi_pass));
-            memset_explicit(prev_pass, 0, sizeof(prev_pass));
+            mbedtls_platform_zeroize(prev_pass, sizeof(prev_pass));
             doorbell_net_set_sta_reconnect_paused(true);
             if (g_panel_cfg.wifi_ssid[0] != '\0') {
                 doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);
@@ -407,7 +408,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
                 "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
         }
 
-        memset_explicit(prev_pass, 0, sizeof(prev_pass));
+        mbedtls_platform_zeroize(prev_pass, sizeof(prev_pass));
         s_sta_cfg_untested = false;
         xSemaphoreGive(g_panel_mutex);
 
@@ -424,7 +425,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
 
     /* Connection failed: roll back to previous NVS credentials and keep portal open (I-40) */
-    memset_explicit(new_pass, 0, sizeof(new_pass));
+    mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
     ESP_LOGW(TAG, "Test association to '%s' failed — rolling back to previous Wi-Fi credentials", new_ssid);
 
     doorbell_net_set_sta_reconnect_paused(true);

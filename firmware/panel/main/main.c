@@ -19,6 +19,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "mbedtls/constant_time.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_panel";
 
@@ -537,7 +538,7 @@ static void step_pairing_discovery(void)
                                                           ch_pkt,
                                                           sizeof(ch_pkt),
                                                           &ch_len);
-        memset_explicit(&blob, 0, sizeof(blob));
+        mbedtls_platform_zeroize(&blob, sizeof(blob));
 
         if (pack_err == ESP_OK) {
             memcpy(s_pair_sess.challenge_pkt, ch_pkt, ch_len);
@@ -644,7 +645,7 @@ static void handle_pair_complete_locked(int lan_sock, const uint8_t *buf, size_t
 
     esp_err_t commit_err = doorbell_storage_panel_save_apt(&new_rec);
     if (commit_err != ESP_OK) {
-        memset_explicit(&new_rec, 0, sizeof(new_rec));
+        mbedtls_platform_zeroize(&new_rec, sizeof(new_rec));
         ESP_LOGE(TAG, "NVS commit of apartment %u failed (%s) — pairing rolled back",
                  (unsigned)apt_no, esp_err_to_name(commit_err));
         abort_pairing_session_locked(true);
@@ -654,7 +655,7 @@ static void handle_pair_complete_locked(int lan_sock, const uint8_t *buf, size_t
     panel_apt_slot_t *slot = &g_apt_slots[apt_no];
     memset(slot, 0, sizeof(*slot));
     slot->nvs = new_rec;
-    memset_explicit(&new_rec, 0, sizeof(new_rec));
+    mbedtls_platform_zeroize(&new_rec, sizeof(new_rec));
     slot->persisted_rx_floor = auth_hdr.tx_counter;
     slot->runtime_tx_counter = 0;
     slot->last_heartbeat_us = esp_timer_get_time();
@@ -926,7 +927,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     xSemaphoreGive(g_panel_mutex);
 
     if (cnt_err != ESP_OK) {
-        memset_explicit(k_apt, 0, sizeof(k_apt));
+        mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -953,7 +954,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     size_t frame_len = 0;
     if (doorbell_frame_encrypt(&req_hdr, k_apt, req_plain, req_plain_len,
                                frame, sizeof(frame), &frame_len) != ESP_OK) {
-        memset_explicit(k_apt, 0, sizeof(k_apt));
+        mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -1038,7 +1039,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
         }
     }
 
-    memset_explicit(k_apt, 0, sizeof(k_apt));
+    mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
     if (acked) {
         doorbell_led_panel_start(LED_PANEL_RESULT_OK);
     } else if (slot_gone) {

@@ -26,6 +26,7 @@
 #include "doorbell_storage.h"
 #include "doorbell_led.h"
 #include "doorbell_net.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_unit";
 
@@ -456,8 +457,8 @@ static void execute_unit_pairing(int udp_sock)
 
     if (!got_challenge) {
         ESP_LOGW(TAG, "Timed out waiting for valid PAIR_CHALLENGE");
-        memset_explicit(k_pair, 0, sizeof(k_pair));
-        memset_explicit(&prov, 0, sizeof(prov));
+        mbedtls_platform_zeroize(k_pair, sizeof(k_pair));
+        mbedtls_platform_zeroize(&prov, sizeof(prov));
         goto pair_fail;
     }
 
@@ -475,7 +476,7 @@ static void execute_unit_pairing(int udp_sock)
         vTaskDelay(pdMS_TO_TICKS(60));
         doorbell_udp_send_direct(udp_sock, confirm_pkt, confirm_len, panel_softap_ip, CONFIG_DOORBELL_UDP_PORT);
     }
-    memset_explicit(k_pair, 0, sizeof(k_pair));
+    mbedtls_platform_zeroize(k_pair, sizeof(k_pair));
 
     /* Phase 2: Switch to Building AP and send PAIR_COMPLETE over LAN (I-30) */
     char hostname[32];
@@ -505,7 +506,7 @@ static void execute_unit_pairing(int udp_sock)
 
     if (my_lan_ip == 0) {
         ESP_LOGW(TAG, "Failed to obtain DHCP lease on building AP within pairing completion window");
-        memset_explicit(&prov, 0, sizeof(prov));
+        mbedtls_platform_zeroize(&prov, sizeof(prov));
         goto pair_fail;
     }
 
@@ -536,7 +537,7 @@ static void execute_unit_pairing(int udp_sock)
     size_t pc_frame_len = 0;
     if (doorbell_frame_encrypt(&pc_hdr, prov.k_apt, pc_plain, pc_plain_len,
                                pc_frame, sizeof(pc_frame), &pc_frame_len) != ESP_OK) {
-        memset_explicit(&prov, 0, sizeof(prov));
+        mbedtls_platform_zeroize(&prov, sizeof(prov));
         goto pair_fail;
     }
 
@@ -586,7 +587,7 @@ static void execute_unit_pairing(int udp_sock)
 
     if (!got_complete_ack) {
         ESP_LOGW(TAG, "Did not receive PAIR_COMPLETE_ACK from panel — rolling back (I-30)");
-        memset_explicit(&prov, 0, sizeof(prov));
+        mbedtls_platform_zeroize(&prov, sizeof(prov));
         goto pair_fail;
     }
 
@@ -615,8 +616,8 @@ static void execute_unit_pairing(int udp_sock)
     }
     doorbell_x25519_free(&s_pregen_x25519);
     xSemaphoreGive(s_state_mutex);
-    memset_explicit(&next, 0, sizeof(next));
-    memset_explicit(&prov, 0, sizeof(prov));
+    mbedtls_platform_zeroize(&next, sizeof(next));
+    mbedtls_platform_zeroize(&prov, sizeof(prov));
 
     if (save_err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save pairing state to NVS: %s", esp_err_to_name(save_err));
@@ -831,7 +832,7 @@ static void execute_open_door_transaction(int udp_sock)
         xSemaphoreGive(s_state_mutex);
 
         if (cnt_err != ESP_OK) {
-            memset_explicit(k_apt, 0, sizeof(k_apt));
+            mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
             break;
         }
 
@@ -858,7 +859,7 @@ static void execute_open_door_transaction(int udp_sock)
         size_t frame_len = 0;
         if (doorbell_frame_encrypt(&req_hdr, k_apt, req_plain, req_plain_len,
                                    frame, sizeof(frame), &frame_len) != ESP_OK) {
-            memset_explicit(k_apt, 0, sizeof(k_apt));
+            mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
             break;
         }
 
@@ -940,7 +941,7 @@ static void execute_open_door_transaction(int udp_sock)
                 }
             }
         }
-        memset_explicit(k_apt, 0, sizeof(k_apt));
+        mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
 
         if (!got_challenge) {
             break;
@@ -983,7 +984,7 @@ static void execute_heartbeat_transaction(int udp_sock)
     xSemaphoreGive(s_state_mutex);
 
     if (cnt_err != ESP_OK) {
-        memset_explicit(k_apt, 0, sizeof(k_apt));
+        mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
         schedule_next_heartbeat(false);
         return;
     }
@@ -1030,7 +1031,7 @@ static void execute_heartbeat_transaction(int udp_sock)
     size_t frame_len = 0;
     if (doorbell_frame_encrypt(&hb_hdr, k_apt, hb_plain, hb_plain_len,
                                frame, sizeof(frame), &frame_len) != ESP_OK) {
-        memset_explicit(k_apt, 0, sizeof(k_apt));
+        mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
         schedule_next_heartbeat(false);
         return;
     }
@@ -1092,7 +1093,7 @@ static void execute_heartbeat_transaction(int udp_sock)
             }
         }
     }
-    memset_explicit(k_apt, 0, sizeof(k_apt));
+    mbedtls_platform_zeroize(k_apt, sizeof(k_apt));
 
     if (acked) {
         s_missed_heartbeats = 0;

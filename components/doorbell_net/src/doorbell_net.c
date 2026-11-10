@@ -19,6 +19,7 @@
 #include "esp_task_wdt.h"
 #include "esp_random.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_net";
 
@@ -344,7 +345,7 @@ esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass)
 
     esp_wifi_disconnect();
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
-    memset_explicit(&wifi_cfg, 0, sizeof(wifi_cfg));
+    mbedtls_platform_zeroize(&wifi_cfg, sizeof(wifi_cfg));
     if (err != ESP_OK) {
         return err;
     }
@@ -506,7 +507,7 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     apply_sta_protocol();
     esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
-    memset_explicit(&ap_cfg, 0, sizeof(ap_cfg));
+    mbedtls_platform_zeroize(&ap_cfg, sizeof(ap_cfg));
     if (err != ESP_OK) {
         return err;
     }

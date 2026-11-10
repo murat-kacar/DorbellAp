@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "panel_console";
 
@@ -105,7 +106,7 @@ static int cmd_doorbell_wifi(int argc, char **argv)
     if (err == ESP_OK) {
         g_panel_cfg = next;
     }
-    memset_explicit(&next, 0, sizeof(next));
+    mbedtls_platform_zeroize(&next, sizeof(next));
     xSemaphoreGive(g_panel_mutex);
 
     if (err != ESP_OK) {

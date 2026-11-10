@@ -7,6 +7,7 @@
 #include "esp_rom_crc.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_storage";
 
@@ -50,7 +51,7 @@ static esp_err_t storage_secure_nvs_init(void)
     } else {
         ESP_LOGE(TAG, "NVS key partition unusable (%s); keys are never regenerated over it", esp_err_to_name(err));
     }
-    memset_explicit(&cfg, 0, sizeof(cfg));
+    mbedtls_platform_zeroize(&cfg, sizeof(cfg));
     return err;
 }
 #endif
@@ -205,7 +206,7 @@ esp_err_t doorbell_storage_panel_snapshot_factory_wifi(const doorbell_panel_cfg_
     }
     doorbell_panel_factory_wifi_blob_t blob;
     esp_err_t err = doorbell_storage_panel_load_factory_wifi(&blob);
-    memset_explicit(&blob, 0, sizeof(blob));
+    mbedtls_platform_zeroize(&blob, sizeof(blob));
     if (err != ESP_ERR_NVS_NOT_FOUND) {
         return err; /* ESP_OK: already recorded; anything else: never overwrite an unreadable record */
     }
@@ -224,7 +225,7 @@ esp_err_t doorbell_storage_panel_snapshot_factory_wifi(const doorbell_panel_cfg_
         }
         nvs_close(h);
     }
-    memset_explicit(&blob, 0, sizeof(blob));
+    mbedtls_platform_zeroize(&blob, sizeof(blob));
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Recorded the provisioned building Wi-Fi as factory Wi-Fi (SSID '%s')", cfg->wifi_ssid);
     }
@@ -243,7 +244,7 @@ esp_err_t doorbell_storage_panel_factory_reset(doorbell_panel_cfg_blob_t *cfg, u
     if (fw_err != ESP_OK) {
         /* Without a readable factory Wi-Fi record the reset would invent one: refuse, nothing is changed */
         ESP_LOGE(TAG, "Factory reset refused: factory Wi-Fi record unavailable (%s)", esp_err_to_name(fw_err));
-        memset_explicit(&fw, 0, sizeof(fw));
+        mbedtls_platform_zeroize(&fw, sizeof(fw));
         return fw_err;
     }
 
@@ -258,12 +259,12 @@ esp_err_t doorbell_storage_panel_factory_reset(doorbell_panel_cfg_blob_t *cfg, u
     next.wrong_code_count = 0;
     next.lockout_level = 0;
     next.lockout_remaining_s = 0;
-    memset_explicit(&fw, 0, sizeof(fw));
+    mbedtls_platform_zeroize(&fw, sizeof(fw));
     esp_err_t err = doorbell_storage_panel_save_cfg(&next);
     if (err == ESP_OK) {
         *cfg = next;
     }
-    memset_explicit(&next, 0, sizeof(next));
+    mbedtls_platform_zeroize(&next, sizeof(next));
     if (err != ESP_OK) {
         return err;
     }
