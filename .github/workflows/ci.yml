@@ -14,19 +14,49 @@ jobs:
       matrix:
         project: [firmware/panel, firmware/unit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.1
           target: esp32
           path: ${{ matrix.project }}
 
+  # Burn profile (ADR 0015) the way the flasher builds it: role defaults + firmware/sdkconfig.burn in build_burn/.
+  # The images are unsigned here, as in the flasher, which signs them afterwards with a one-time key.
+  firmware-burn:
+    name: Build ${{ matrix.project }} (esp32, Burn profile)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [firmware/panel, firmware/unit]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build with the Burn overlay
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd "${{ matrix.project }}"
+          idf.py -B build_burn -D SDKCONFIG="$PWD/build_burn/sdkconfig" \
+                 -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;../sdkconfig.burn" set-target esp32 build
+      - name: Check the resolved security options
+        shell: bash
+        run: |
+          cfg="${{ matrix.project }}/build_burn/sdkconfig"
+          for opt in CONFIG_SECURE_BOOT_V2_ENABLED=y CONFIG_SECURE_FLASH_ENC_ENABLED=y \
+                     CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y CONFIG_SECURE_DISABLE_ROM_DL_MODE=y \
+                     CONFIG_NVS_ENCRYPTION=y CONFIG_NVS_SEC_KEY_PROTECT_USING_FLASH_ENC=y \
+                     CONFIG_ESP32_REV_MIN_3=y CONFIG_PARTITION_TABLE_CUSTOM=y; do
+            grep -qx "$opt" "$cfg" || { echo "::error::$opt missing in $cfg"; exit 1; }
+          done
+
   host-unit:
     name: Host unit tests (linux target)
     runs-on: ubuntu-latest
     container: espressif/idf:v6.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and run test/host_unit
         shell: bash
         run: |
@@ -40,8 +70,8 @@ jobs:
     name: Protocol vectors and Python lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography ruff==0.17.4
