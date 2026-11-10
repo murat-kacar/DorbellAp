@@ -41,7 +41,6 @@ typedef struct {
 RTC_NOINIT_ATTR static rtc_silence_state_t s_rtc_silence;
 static int64_t s_last_any_module_rx_us = 0;
 
-/* Pending asynchronous actions dispatched from keypad/button callbacks to panel_worker_task */
 /* Requests from the keypad, portal, console and button tasks, executed by panel_worker_task. atomic_exchange() takes a
  * request in one step; rings are queued so a second ring entered before the first ran is not lost. */
 #define RING_QUEUE_LEN 4
@@ -557,8 +556,6 @@ static void step_pairing_discovery(void)
     xSemaphoreGive(g_panel_mutex);
 }
 
-/* ---- Operational LAN UDP Frame Handler ---- */
-
 /* ---- Module frames: dispatch under g_panel_mutex, side effects (relay, logging) after releasing it ---- */
 
 /* Work of a handled frame that must run after g_panel_mutex is released */
@@ -962,9 +959,10 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     }
 
     bool acked = false;
+    bool slot_gone = false;
     int max_attempts = 1 + CONFIG_DOORBELL_PANEL_RING_RETRIES;
 
-    for (int attempt = 0; attempt < max_attempts && !acked; attempt++) {
+    for (int attempt = 0; attempt < max_attempts && !acked && !slot_gone; attempt++) {
         esp_task_wdt_reset();
         int64_t t_send_us = esp_timer_get_time();
         doorbell_udp_send_frame(lan_sock, frame, frame_len, peer_ip,
@@ -1001,6 +999,12 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
             }
 
             xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+            /* handle_lan_packet() above may have removed this registration (re-pairing under another number) */
+            if (!slot->nvs.registered) {
+                xSemaphoreGive(g_panel_mutex);
+                slot_gone = true;
+                break;
+            }
             if (rx_hdr.tx_counter <= slot->nvs.rx_floor) {
                 xSemaphoreGive(g_panel_mutex);
                 continue;
@@ -1037,6 +1041,9 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     memset_explicit(k_apt, 0, sizeof(k_apt));
     if (acked) {
         doorbell_led_panel_start(LED_PANEL_RESULT_OK);
+    } else if (slot_gone) {
+        ESP_LOGW(TAG, "RING to apartment %u stopped: registration removed meanwhile", (unsigned)apt_no);
+        doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
     } else {
         ESP_LOGW(TAG, "RING to apartment %u timed out without ACK", (unsigned)apt_no);
         doorbell_led_panel_start(LED_PANEL_NO_RESPONSE);

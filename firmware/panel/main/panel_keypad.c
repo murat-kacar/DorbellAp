@@ -496,9 +496,8 @@ void panel_keypad_process(void)
         xSemaphoreGive(g_panel_mutex);
     }
 
-    if (s_key_overflow_pending) {
+    if (atomic_exchange(&s_key_overflow_pending, false)) {
         /* Keys were dropped: the buffered sequence is no longer what the user typed, so discard it */
-        s_key_overflow_pending = false;
         xQueueReset(s_key_queue);
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         clear_keypad_buffer();
