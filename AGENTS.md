@@ -249,7 +249,12 @@ Normative companion specifications:
      reach. The building AP must accept 802.11b clients (no "disable 802.11b" / minimum basic rate > 11 Mbps).
   6. Flasher **Production** profile builds with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`); the **Development**
      profile keeps the ESP-IDF default `-Og`. The `-Og` panel app fills 91.6 % of the 1 MB factory partition.
-     Assertions stay enabled in both. The Production profile does not burn eFuses (hardening ADR pending).
+     Assertions stay enabled in both. The Production profile does not burn eFuses.
+  7. Flasher **Burn** profile = Production `-Os` + the overlay `firmware/sdkconfig.burn` (Secure Boot v2 RSA-3072,
+     release flash encryption, UART ROM download mode permanently disabled, NVS encryption with the flash-encryption
+     key scheme, `CONFIG_ESP32_REV_MIN_3`) and the partition table `firmware/partitions_burn.csv` (table at
+     `0x10000`, `nvs`, encrypted `nvs_keys`, factory app at `0x20000`). It builds in `firmware/<role>/build_burn/`
+     and never touches the Development / Production build state. ADR 0015.
 
 ---
 
@@ -281,8 +286,9 @@ finalized:
    - **Development profile:** in accordance with ADR 0013 (offline system, no OTA, UART re-flash), Release-mode Flash
      Encryption, NVS Encryption, and Secure Boot v2 remain disabled (ESP-IDF defaults).
    - **Production profile:** superseded by [ADR 0015](docs/adr/0015-production-security-hardening.md) (Accepted,
-     Option B): Secure Boot v2 (RSA), release-mode flash encryption and NVS encryption, **no field updates**; signing
-     key held offline by the owner. Implementation pending the bench prototype in ADR 0015 §6.
+     Option B) and implemented as the flasher **Burn** profile: Secure Boot v2 (RSA), release-mode flash encryption
+     and NVS encryption, **no field updates**; no stored signing key (each Burn build signs with a one-time key and destroys it). The Production profile itself
+     stays unhardened for bench testing of the release build. First hardware run: ADR 0015 §6.
 6. **`I-6`, `I-19`, `I-44` — Shared 4-Digit User Code & Lockout Policy (Accepted Product Scope):**
    - The single building-wide 4-digit user code (`I-6`), reset-on-success lockout behavior (`I-19`), and shared `*`-prefix
      keypad lockout counter (`I-44`) are intentionally retained to preserve the exact end-user behavior specified in

@@ -7,6 +7,7 @@
 #include "nvs.h"
 #include "esp_rom_crc.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "doorbell_storage";
 
@@ -29,10 +30,37 @@ static uint32_t compute_crc(const void *data, size_t len_without_crc)
     return esp_rom_crc32_le(0, (const uint8_t *)data, len_without_crc);
 }
 
+#if CONFIG_NVS_ENCRYPTION
+/* Burn profile (ADR 0015): nvs_flash_init() regenerates the NVS keys on ANY key-partition read error, which would
+ * orphan the provisioned (encrypted) NVS - an implicit erase, forbidden by I-13. Keys are generated only for a blank
+ * nvs_keys partition (first boot of an apartment module); a corrupt key partition fails closed. */
+static esp_err_t storage_secure_nvs_init(void)
+{
+    nvs_sec_scheme_t *scheme = nvs_flash_get_default_security_scheme();
+    nvs_sec_cfg_t cfg = {0};
+    esp_err_t err = nvs_flash_read_security_cfg_v2(scheme, &cfg);
+    if (err == ESP_ERR_NVS_KEYS_NOT_INITIALIZED) {
+        ESP_LOGW(TAG, "NVS key partition is blank: generating device NVS encryption keys");
+        err = nvs_flash_generate_keys_v2(scheme, &cfg);
+    }
+    if (err == ESP_OK) {
+        err = nvs_flash_secure_init(&cfg);
+    } else {
+        ESP_LOGE(TAG, "NVS key partition unusable (%s); keys are never regenerated over it", esp_err_to_name(err));
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    return err;
+}
+#endif
+
 esp_err_t doorbell_storage_init(void)
 {
     /* Strictly forbid nvs_flash_erase() on boot errors per I-13 */
+#if CONFIG_NVS_ENCRYPTION
+    esp_err_t err = storage_secure_nvs_init();
+#else
     esp_err_t err = nvs_flash_init();
+#endif
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "CRITICAL: NVS flash init failed (%s) — auto-erase is forbidden by I-13",
                  esp_err_to_name(err));

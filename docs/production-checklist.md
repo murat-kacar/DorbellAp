@@ -1,8 +1,8 @@
 # Production Checklist (Release Software Level)
 
-Scope: manufacturing and installing DorbellAp panels and apartment modules with the **Production** flasher profile.
-This checklist does **not** burn eFuses. Secure Boot / flash encryption are tracked separately in
-[ADR 0015](adr/0015-production-security-hardening.md) (Accepted, Option B; eFuse steps are added to this checklist after the bench prototype).
+Scope: manufacturing and installing DorbellAp panels and apartment modules with the **Production** flasher profile
+(sections 1–4, no eFuses) and, for locked devices, the **Burn** profile (section 5, irreversible,
+[ADR 0015](adr/0015-production-security-hardening.md)). Bench-test every release with Production before burning it.
 
 Normative references: [AGENTS.md](../AGENTS.md), [docs/protocol.md](protocol.md),
 [kullanim-kilavuzu.md](../kullanim-kilavuzu.md), [yapilandirma-ayarlari.md](../yapilandirma-ayarlari.md).
@@ -57,3 +57,23 @@ shared bench codes. Re-run step 2.5.
 | 4.6 | Setup portal `* <admin> * 5 #` from a phone | Page loads on `Doorbell-Setup`; unreachable from building LAN |
 | 4.7 | Error indication (invalid command) | 1 s fast blink |
 | 4.8 | Heartbeat log on the panel monitor | `rssi` ≥ −75 dBm at the installed position, `disconn` stable |
+
+## 5. Burn profile (irreversible, ADR 0015)
+
+A burned chip can never be re-flashed, read out, erased or debugged. Runtime settings (codes, building Wi-Fi via
+portal / console, pairing, hidden reset button) keep working. Burn only after sections 1–4 passed with the
+Production build of the same commit.
+
+| # | Step | Pass criterion |
+| :--- | :--- | :--- |
+| 5.0 | **Power check on this exact board and supply:** flash the Production build (unlocked), erase NVS so the first boot runs the full RF calibration, and watch the boot with Monitor. Fix the supply (cable, powered port, ≥ 1 A 5 V adapter, 470 µF on 3V3) before burning: a burned board that browns out cannot be fixed in firmware | Boot reaches Wi-Fi without `Brownout detector was triggered`; `doorbell_status` answers |
+| 5.1 | Profile **Burn**, same interop values as the Production build, build both roles (the one-time signing key is created and destroyed by the build; nothing to store) | `[Build] SUCCESS -> ..._burn.bin (..., signed)` and `One-time signing key destroyed.` |
+| 5.2 | Panel card: role `panel`, select `panel_*_burn.bin`, **Random** codes, optional Wi-Fi; print the label **before** flashing (codes cannot be read back) | Label matches the card fields |
+| 5.3 | **Burn** (the card shows only Burn, Monitor and Scan for a Burn image) → confirm → type `BURN` | Log `eFuse pre-check passed`, `Encrypted NVS ready and verified`, write verified |
+| 5.4 | Keep the board powered until the card shows **Burned and locked** (first boot burns eFuses and encrypts the flash) | Log shows `Flash encryption completed` and then `Project name:` once; no `E (...) secure_boot / flash_encrypt / doorbell_storage` and no `Brownout detector was triggered` lines (the flasher reports these as errors) |
+| 5.5 | Apartment card: role `apartment`, `apartment_*_burn.bin`, **Burn** → `BURN` | Same as 5.4; module log `NVS key partition is blank: generating device NVS encryption keys`, LED unpaired pattern |
+| 5.6 | Run section 4 on the burned pair | All rows pass |
+
+`Burn refused` means the chip is not fresh (already burned, key block used, coding scheme not NONE, revision < v3.0):
+nothing was written. `Burn write failed` happens before any eFuse is burned: the chip is still open and can be
+retried. Never unplug during 5.4; an interrupted first boot can leave the chip unusable.

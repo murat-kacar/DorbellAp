@@ -4,7 +4,8 @@ DorbellAp — Customization, Build, Detection, and Flashing GUI.
 
 Provides a two-column desktop interface:
 - Left column ("Customization and build"):
-  1. Profile selection (Development reversible vs Production disabled per ADR 0013)
+  1. Profile selection: Development (-Og), Production (-Os, unlocked) or Burn (-Os + Secure Boot v2 + release
+     flash encryption + NVS encryption, irreversible per chip - ADR 0015)
   2. Role selection (Panel vs Apartment)
   3. Scrollable Kconfig parameter editor with hover tooltips, range checks, and GPIO conflict validation
   4. One-click incremental ESP-IDF build + esptool merge-bin outputting a single
@@ -54,7 +55,7 @@ except ImportError:
     raise
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 # Project paths
 FLASHER_DIR = Path(__file__).resolve().parent
@@ -1330,6 +1331,153 @@ def inspect_firmware_binary(bin_path: Path) -> Tuple[str, str]:
     return layout, "unknown"
 
 
+# ---- Burn profile (ADR 0015, Option B): Secure Boot v2 + release flash encryption + NVS encryption ----
+
+BURN_OVERLAY_PATH = PROJECT_ROOT / "firmware" / "sdkconfig.burn"
+BURN_CONFIRM_WORD = "BURN"
+_SDKCONFIG_LINE_RE = re.compile(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=.*| is not set)$")
+
+# Partition types / subtypes (esp_partition.h)
+_PT_MAGIC = b"\xaa\x50"
+_PT_MD5_MAGIC = b"\xeb\xeb"
+_PT_TYPE_APP, _PT_TYPE_DATA = 0x00, 0x01
+_PT_SUBTYPE_FACTORY, _PT_SUBTYPE_NVS, _PT_SUBTYPE_NVS_KEYS = 0x00, 0x02, 0x04
+_PT_FLAG_ENCRYPTED = 0x1
+
+# First-boot log lines of a Burn device (bootloader_support / esp_app_format, ESP-IDF v6.1)
+_BURN_FE_DONE_RE = re.compile(r"Flash encryption completed")
+_BURN_APP_START_RE = re.compile(r"Project name:")
+_BURN_ERROR_RE = re.compile(
+    r"^E \(\d+\) (secure_boot\S*|flash_encrypt|boot|esp_image|doorbell_storage)\b|Guru Meditation|abort\(\) was called"
+    r"|Brownout detector was triggered"
+)
+
+
+def read_sdkconfig_overlay(path: Path) -> Dict[str, str]:
+    """CONFIG name -> authoritative line ("CONFIG_X=..." or "# CONFIG_X is not set")."""
+    overlay: Dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = _SDKCONFIG_LINE_RE.match(line.strip())
+        if m:
+            overlay[m.group(1)] = line.strip()
+    return overlay
+
+
+def apply_sdkconfig_overlay(sdkconfig_path: Path, overlay: Dict[str, str]) -> None:
+    out: List[str] = []
+    seen = set()
+    for line in sdkconfig_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        m = _SDKCONFIG_LINE_RE.match(line)
+        if m and m.group(1) in overlay:
+            line = overlay[m.group(1)]
+            seen.add(m.group(1))
+        out.append(line)
+    out.extend(v for k, v in overlay.items() if k not in seen)
+    sdkconfig_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def check_sdkconfig_overlay(sdkconfig_path: Path, overlay: Dict[str, str]) -> List[str]:
+    """Overlay lines that kconfgen did not keep (a dependency silently dropped them)."""
+    lines = set(sdkconfig_path.read_text(encoding="utf-8", errors="ignore").splitlines())
+    problems = []
+    for name, want in overlay.items():
+        if want.endswith(" is not set"):
+            if any(l.startswith(f"{name}=") for l in lines):
+                problems.append(f"{name} should be unset")
+        elif want not in lines:
+            problems.append(f"expected '{want}'")
+    return problems
+
+
+def parse_partition_table(blob: bytes) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for off in range(0, len(blob) - 31, 32):
+        raw = blob[off : off + 32]
+        if raw[:2] == _PT_MD5_MAGIC:
+            continue
+        if raw[:2] != _PT_MAGIC:
+            break
+        _magic, ptype, subtype, offset, size = struct.unpack_from("<HBBII", raw, 0)
+        (flags,) = struct.unpack_from("<I", raw, 28)
+        label = raw[12:28].split(b"\x00", 1)[0].decode("ascii", errors="replace")
+        entries.append(
+            {"label": label, "type": ptype, "subtype": subtype, "offset": offset, "size": size,
+             "encrypted": bool(flags & _PT_FLAG_ENCRYPTED)}
+        )
+    return entries
+
+
+def burn_layout_from_partition_table(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Offsets of the Burn layout; raises ValueError if the table is not the expected nvs / nvs_keys / factory set."""
+    def one(ptype: int, subtype: int, what: str) -> Dict[str, Any]:
+        found = [e for e in entries if e["type"] == ptype and e["subtype"] == subtype]
+        if len(found) != 1:
+            raise ValueError(f"partition table must contain exactly one {what} partition (found {len(found)})")
+        return found[0]
+
+    nvs = one(_PT_TYPE_DATA, _PT_SUBTYPE_NVS, "nvs")
+    keys = one(_PT_TYPE_DATA, _PT_SUBTYPE_NVS_KEYS, "nvs_keys")
+    app = one(_PT_TYPE_APP, _PT_SUBTYPE_FACTORY, "factory app")
+    if nvs["encrypted"]:
+        raise ValueError("the nvs partition must not carry the 'encrypted' flag (NVS encrypts its own entries)")
+    if not keys["encrypted"]:
+        raise ValueError("the nvs_keys partition must carry the 'encrypted' flag")
+    if keys["size"] < 0x1000:
+        raise ValueError("the nvs_keys partition must be at least 4 KB")
+    return {
+        "nvs_offset": nvs["offset"], "nvs_size": nvs["size"],
+        "nvs_keys_offset": keys["offset"], "nvs_keys_size": keys["size"],
+        "app_offset": app["offset"], "app_size": app["size"],
+    }
+
+
+def make_nvs_keys_partition() -> bytes:
+    """nvs_keys partition image: XTS eky (32 B) + tky (32 B) + CRC32, rest 0xFF (nvs_flash_read_security_cfg).
+
+    Generated with `secrets` rather than nvs_partition_gen --keygen, which draws the key from `random`.
+    """
+    buf = bytearray(b"\xff") * 0x1000
+    buf[0:64] = secrets.token_bytes(64)
+    struct.pack_into("<I", buf, 64, zlib.crc32(bytes(buf[0:64]), 0xFFFFFFFF) & 0xFFFFFFFF)
+    return bytes(buf)
+
+
+def burn_efuse_problems(summary: Dict[str, Any]) -> List[str]:
+    """Reasons an ESP32 must not be burned, from `espefuse summary --format json`. Empty list = fresh, eligible chip."""
+    problems: List[str] = []
+
+    def field(name: str) -> Dict[str, Any]:
+        entry = summary.get(name)
+        if not isinstance(entry, dict) or "value" not in entry:
+            raise KeyError(name)
+        return entry
+
+    try:
+        if field("WAFER_VERSION_MAJOR")["value"] < 3:
+            problems.append(f"chip revision v{field('WAFER_VERSION_MAJOR')['value']}.x: Secure Boot v2 needs v3.0 or newer")
+        if not str(field("CODING_SCHEME")["value"]).upper().startswith("NONE"):
+            problems.append(f"eFuse coding scheme is '{field('CODING_SCHEME')['value']}': Secure Boot v2 needs 'NONE'")
+        if field("FLASH_CRYPT_CNT")["value"] != 0:
+            problems.append("flash encryption has already been enabled on this chip (FLASH_CRYPT_CNT != 0)")
+        for name in ("ABS_DONE_0", "ABS_DONE_1"):
+            if field(name)["value"]:
+                problems.append(f"Secure Boot is already enabled ({name})")
+        for name in ("BLOCK1", "BLOCK2"):
+            entry = field(name)
+            if not (entry.get("readable") and entry.get("writeable")):
+                problems.append(f"{name} (key block) is read- or write-protected")
+            elif any(b != "00" for b in str(entry["value"]).split()):
+                problems.append(f"{name} (key block) already holds a key")
+        for name in ("FLASH_CRYPT_CNT", "ABS_DONE_1", "UART_DOWNLOAD_DIS"):
+            if not field(name).get("writeable"):
+                problems.append(f"{name} is write-protected")
+        if field("UART_DOWNLOAD_DIS")["value"]:
+            problems.append("UART download mode is already disabled")
+    except (KeyError, TypeError) as exc:
+        problems.append(f"espefuse summary lacks or has an unexpected field {exc}")
+    return problems
+
+
 class SerialMonitorWindow(tk.Toplevel):
     """Live UART Serial Monitor & Authenticated Console Window for a COM port."""
 
@@ -1666,6 +1814,14 @@ class DeviceCard(ttk.LabelFrame):
 
         self.btn_scan = ttk.Button(row_btns, text="Scan", width=8, command=self._on_scan)
         self.btn_scan.pack(side=tk.LEFT)
+        self._button_order = (
+            self.btn_flash, self.btn_flash_nvs, self.btn_monitor, self.btn_factory, self.btn_erase, self.btn_scan
+        )
+        # Burn image selected: NVS is written together with the firmware after a full erase, and a burned chip has
+        # no download mode, so the NVS / reset / erase buttons have no use (ADR 0015)
+        self._burn_image_selected = False
+        self._burned = False  # set after a confirmed Burn: this chip can never be flashed again
+        self.fw_var.trace_add("write", lambda *_a: self._update_buttons_for_firmware())
 
         # 5. Progress bar & status row
         row_prog = ttk.Frame(self)
@@ -1703,7 +1859,36 @@ class DeviceCard(ttk.LabelFrame):
             self.browse_btn,
         ):
             btn.configure(state=state)
+        if self._burned:
+            self.btn_flash.configure(state=tk.DISABLED)
         self.role_cb.configure(state=tk.DISABLED if busy else "readonly")
+
+    def _update_buttons_for_firmware(self) -> None:
+        """Show only the actions that make sense for the selected image (Burn: Burn, Monitor, Scan)."""
+        if not self.winfo_exists():
+            return
+        fw_path = self._resolve_fw_path()
+        info = read_build_info(fw_path) if fw_path else None
+        burn = bool(info and info.get("profile") == "burn") or self._burned
+        if burn == self._burn_image_selected:
+            return
+        self._burn_image_selected = burn
+        hidden = (self.btn_flash_nvs, self.btn_factory, self.btn_erase)
+        for btn in self._button_order:
+            btn.pack_forget()
+        for btn in self._button_order:
+            if burn and btn in hidden:
+                continue
+            btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_flash.configure(text="Burn" if burn else "Flash")
+
+    def mark_burned(self) -> None:
+        """After a confirmed Burn: the chip accepts no further flashing; Monitor and Scan stay available."""
+        self._burned = True
+        self._burn_image_selected = False  # force a relayout
+        self._update_buttons_for_firmware()
+        self.btn_flash.configure(state=tk.DISABLED)
+        self.chip_info_var.set(self.chip_info_var.get() + " | BURNED (locked)")
 
     def _on_role_changed(self, _event: Optional[tk.Event] = None) -> None:
         role = self.role_var.get()
@@ -1721,11 +1906,13 @@ class DeviceCard(ttk.LabelFrame):
 
         role = self.role_var.get()
         prefix = "panel_" if role == "panel" else "apartment_"
-        selected = next((n for n in names if n.startswith(prefix)), None)
+        # Never auto-select an irreversible Burn image: it must be chosen explicitly in the list
+        selected = next((n for n in names if n.startswith(prefix) and not n.endswith("_burn.bin")), None)
+        fallback = next((n for n in names if not n.endswith("_burn.bin")), None)
         if selected:
             self.fw_var.set(selected)
-        elif names and not self.fw_var.get():
-            self.fw_var.set(names[0])
+        elif fallback and not self.fw_var.get():
+            self.fw_var.set(fallback)
         self._sync_code_lengths_to_firmware()
 
     def _on_browse(self) -> None:
@@ -1760,6 +1947,17 @@ class DeviceCard(ttk.LabelFrame):
         fw_path = self._resolve_fw_path()
         if not fw_path:
             messagebox.showerror("Firmware Not Found", "Please build or select a valid .bin firmware file first.")
+            return
+
+        info = read_build_info(fw_path)
+        if info and info.get("profile") == "burn":
+            self._start_burn(fw_path, info)
+            return
+        if fw_path.stem.endswith("_burn"):
+            messagebox.showerror(
+                "Burn Image Without Build Info",
+                f"'{fw_path.name}' looks like a Burn image but its build-info file is missing. Nothing was flashed.",
+            )
             return
 
         layout, detected_role = inspect_firmware_binary(fw_path)
@@ -1818,7 +2016,8 @@ class DeviceCard(ttk.LabelFrame):
             "current GUI settings (selected firmware has no build info - make sure it matches)",
         )
 
-    def _start_panel_nvs_provisioning(self, title: str, intro: str) -> None:
+    def _validated_panel_fields(self) -> Optional[Tuple[str, str, str, str]]:
+        """(admin, user, ssid, password) from this card, or None after showing why they are invalid."""
         admin_code = self.admin_code_var.get().strip()
         user_code = self.user_code_var.get().strip()
         ssid = self.wifi_ssid_var.get().strip()
@@ -1831,19 +2030,19 @@ class DeviceCard(ttk.LabelFrame):
                 "Invalid Admin Code",
                 f"Admin code must be exactly {req_admin_len} digits (0-9), as required by the {len_source}.",
             )
-            return
+            return None
         if not user_code.isdigit() or len(user_code) != req_user_len:
             messagebox.showerror(
                 "Invalid User Code",
                 f"User code must be exactly {req_user_len} digits (0-9), as required by the {len_source}.",
             )
-            return
+            return None
         if user_code == admin_code:
             messagebox.showerror("Invalid Codes", "User code and Admin code cannot be identical.")
-            return
+            return None
         if "\x00" in ssid or "\x00" in pw:
             messagebox.showerror("Invalid Wi-Fi Credentials", "SSID and password cannot contain null bytes.")
-            return
+            return None
         ssid_bytes = len(ssid.encode("utf-8"))
         pw_bytes = len(pw.encode("utf-8"))
         if ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
@@ -1851,7 +2050,61 @@ class DeviceCard(ttk.LabelFrame):
                 "Invalid Wi-Fi Credentials",
                 "Wi-Fi SSID must be 0-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes.",
             )
+            return None
+        return admin_code, user_code, ssid, pw
+
+    def _start_burn(self, fw_path: Path, info: Dict[str, Any]) -> None:
+        """Burn flow: one irreversible write of signed firmware (+ encrypted panel NVS), then the locking first boot."""
+        role = self.role_var.get()
+        if info.get("role") != role:
+            messagebox.showerror(
+                "Role Mismatch",
+                f"'{fw_path.name}' is a '{info.get('role')}' Burn image but this card is set to '{role}'. "
+                "Burning is irreversible, so a mismatch is never flashed.",
+            )
             return
+        fields: Optional[Tuple[str, str, str, str]] = None
+        if role == "panel":
+            fields = self._validated_panel_fields()
+            if fields is None:
+                return
+
+        what = (
+            "the signed panel firmware together with its encrypted NVS (the admin/user codes and optional Wi-Fi "
+            "from this card)" if role == "panel" else "the signed apartment-module firmware (it generates its own "
+            "NVS keys on first boot and starts unpaired)"
+        )
+        ok = messagebox.askyesno(
+            "IRREVERSIBLE: Burn this chip?",
+            f"Port {self.port} will receive {what}.\n\n"
+            "On its first boot the chip permanently burns eFuses: Secure Boot v2, flash encryption (release) and "
+            "disabled UART download mode. Afterwards it can NEVER be re-flashed, read out, erased or debugged; "
+            "firmware bugs and compile-time settings can only be fixed by replacing the hardware.\n\n"
+            + ("Print the label with these codes first: they cannot be read back from the chip.\n\n" if role == "panel" else "")
+            + "Do not unplug the board until the flasher reports the result (about one minute).\n\nContinue?",
+            icon=messagebox.WARNING,
+        )
+        if not ok:
+            return
+        typed = simpledialog.askstring(
+            "Final Confirmation",
+            f"Type {BURN_CONFIRM_WORD} to burn the chip on {self.port}:",
+            parent=self,
+        )
+        if (typed or "").strip() != BURN_CONFIRM_WORD:
+            self.app.log(f"[{self.port}] Burn cancelled (confirmation word not entered).\n")
+            return
+
+        self._close_monitor_if_open()
+        self.set_busy(True)
+        self.set_status("Burn: checking eFuses...", "#b36b00", 2.0)
+        threading.Thread(target=self.app.worker_burn_device, args=(self, fw_path, info, fields), daemon=True).start()
+
+    def _start_panel_nvs_provisioning(self, title: str, intro: str) -> None:
+        fields = self._validated_panel_fields()
+        if fields is None:
+            return
+        admin_code, user_code, ssid, pw = fields
 
         ok = messagebox.askyesno(
             title,
@@ -2083,18 +2336,21 @@ class DoorbellFlasherApp:
         ).pack(anchor=tk.W)
         ttk.Radiobutton(
             prof_box,
-            text="Production (release build: -Os)",
+            text="Production (release build: -Os, unlocked)",
             variable=self.profile_var,
             value="prod",
-        ).pack(anchor=tk.W, pady=(2, 2))
-        tk.Label(
+        ).pack(anchor=tk.W, pady=(2, 0))
+        ttk.Radiobutton(
             prof_box,
-            text="Development keeps the debug build (-Og). Production only changes compiler settings;\n"
-            "it does not burn eFuses (Secure Boot / flash encryption ADR pending, ADR 0013 / I-16).",
-            fg="#666666",
-            font=("Segoe UI", 8),
-            justify=tk.LEFT,
-        ).pack(anchor=tk.W)
+            text="Burn (Production + Secure Boot v2 + flash/NVS encryption - IRREVERSIBLE)",
+            variable=self.profile_var,
+            value="burn",
+        ).pack(anchor=tk.W, pady=(2, 2))
+        self.profile_hint_lbl = tk.Label(prof_box, fg="#666666", font=("Segoe UI", 8), justify=tk.LEFT)
+        self.profile_hint_lbl.pack(anchor=tk.W)
+
+        self.profile_var.trace_add("write", lambda *_a: self._on_profile_changed())
+        self._on_profile_changed()
 
         # 2. Role to configure and build
         role_box = ttk.LabelFrame(left_col, text="2. Role to configure and build", padding=(10, 6))
@@ -2541,13 +2797,24 @@ class DoorbellFlasherApp:
         if validated is None:
             return
 
+        profile = self.profile_var.get()
         self._building = True
         self.btn_build.configure(state=tk.DISABLED)
         threading.Thread(
             target=self._worker_build_firmware,
-            args=(role, validated, self.profile_var.get() == "prod"),
+            args=(role, validated, profile),
             daemon=True,
         ).start()
+
+    def _on_profile_changed(self) -> None:
+        hints = {
+            "dev": "Debug build (-Og). Boards stay re-flashable.",
+            "prod": "Release build (-Os). No eFuses are burned; boards stay re-flashable (bench-test the release here).",
+            "burn": "Release build, signed with a one-time key (nothing to store). Flashing it burns eFuses on first boot:\n"
+            "the chip can never be re-flashed, read out or debugged again. Codes and Wi-Fi are written with the firmware.",
+        }
+        profile = self.profile_var.get()
+        self.profile_hint_lbl.configure(text=hints.get(profile, ""), fg="#b33a3a" if profile == "burn" else "#666666")
 
     @staticmethod
     def _apply_kconfig_to_sdkconfig(sdkconfig_path: Path, specs: List[ParamSpec], values: Dict[str, Any]) -> None:
@@ -2694,14 +2961,18 @@ class DoorbellFlasherApp:
             out.append(line)
         sdkconfig_path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
-    def _worker_build_firmware(self, role: str, values: Dict[str, Any], production: bool = False) -> None:
+    def _worker_build_firmware(
+        self, role: str, values: Dict[str, Any], profile: str = "dev"
+    ) -> None:
         is_panel = role == "panel"
         fw_dir = PANEL_FW_DIR if is_panel else UNIT_FW_DIR
         specs = PANEL_PARAMS if is_panel else APARTMENT_PARAMS
         app_bin_name = "doorbell_panel.bin" if is_panel else "doorbell_unit.bin"
         prefix = "panel" if is_panel else "apartment"
+        burn = profile == "burn"
+        production = profile in ("prod", "burn")
 
-        profile_name = "Production (-Os)" if production else "Development (-Og)"
+        profile_name = {"dev": "Development (-Og)", "prod": "Production (-Os)", "burn": "Burn (-Os, Secure Boot v2 + encryption)"}[profile]
         self.log(f"\n=== Building {prefix} firmware - {profile_name} ===\n")
         python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
 
@@ -2726,15 +2997,28 @@ class DoorbellFlasherApp:
                     apply_specs.append(ParamSpec(key, key, "", "str", "", ""))
                     apply_values[key] = digits[: int(length)]
             self._apply_kconfig_to_sdkconfig(sdkconfig_path, apply_specs, apply_values)
-            self._apply_build_profile(sdkconfig_path, production)
-            self.log("[Build] Applied GUI Kconfig settings to sdkconfig. Running idf.py build...\n")
+            if burn:
+                # Separate tree and sdkconfig: the Development / Production build state is never touched
+                build_dir = fw_dir / "build_burn"
+                build_dir.mkdir(exist_ok=True)
+                burn_sdkconfig = build_dir / "sdkconfig"
+                shutil.copyfile(sdkconfig_path, burn_sdkconfig)
+                overlay = read_sdkconfig_overlay(BURN_OVERLAY_PATH)
+                apply_sdkconfig_overlay(burn_sdkconfig, overlay)
+                self._apply_build_profile(burn_sdkconfig, True)
+                build_cmd = [python_exe, str(idf_py), "-B", str(build_dir), "-D", f"SDKCONFIG={burn_sdkconfig}", "build"]
+                self.log(f"[Build] Applied GUI settings + {BURN_OVERLAY_PATH.name} to build_burn/sdkconfig. Running idf.py build...\n")
+            else:
+                build_dir = fw_dir / "build"
+                self._apply_build_profile(sdkconfig_path, production)
+                build_cmd = [python_exe, str(idf_py), "build"]
+                self.log("[Build] Applied GUI Kconfig settings to sdkconfig. Running idf.py build...\n")
 
-            rc = self._run_logged_cmd([python_exe, str(idf_py), "build"], cwd=fw_dir, env=env)
+            rc = self._run_logged_cmd(build_cmd, cwd=fw_dir, env=env)
             if rc != 0:
                 self.log(f"[Build] ERROR: idf.py build exited with code {rc}\n")
                 return
 
-            build_dir = fw_dir / "build"
             bootloader_bin = build_dir / "bootloader" / "bootloader.bin"
             part_bin = build_dir / "partition_table" / "partition-table.bin"
             app_bin = build_dir / app_bin_name
@@ -2745,8 +3029,45 @@ class DoorbellFlasherApp:
 
             BUILDS_DIR.mkdir(parents=True, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            out_name = f"{prefix}_{ts}{'_prod' if production else ''}.bin"
+            suffix = {"dev": "", "prod": "_prod", "burn": "_burn"}[profile]
+            out_name = f"{prefix}_{ts}{suffix}.bin"
             out_path = BUILDS_DIR / out_name
+
+            def _on_done() -> None:
+                self._update_last_build_label(out_name)
+                for card in self._device_cards:
+                    card.refresh_firmware_list()
+
+            if burn:
+                # One-time signing key: created for this build, used to sign it, then destroyed. Burned chips keep
+                # only its public-key digest and can never be re-flashed, so the key has no later use (ADR 0015).
+                with tempfile.TemporaryDirectory(prefix="dorbellap_sbv2_") as key_dir:
+                    signing_key = Path(key_dir) / "build_key.pem"
+                    rc = self._run_logged_cmd(
+                        [python_exe, "-m", "espsecure", "generate-signing-key", "--version", "2", "--scheme", "rsa3072",
+                         str(signing_key)],
+                        cwd=fw_dir, env=env,
+                    )
+                    if rc != 0 or not signing_key.is_file():
+                        self.log("[Build] ERROR: could not create the one-time signing key.\n")
+                        return
+                    try:
+                        burn_info = self._finish_burn_build(
+                            build_dir, overlay, bootloader_bin, part_bin, app_bin, signing_key, out_path, python_exe, fw_dir, env
+                        )
+                    finally:
+                        signing_key.write_bytes(b"\0" * signing_key.stat().st_size)  # best effort before deletion
+                self.log("[Build] One-time signing key destroyed.\n")
+                if burn_info is None:
+                    return
+                info: Dict[str, Any] = {"role": prefix, "profile": "burn", **burn_info}
+                if is_panel:
+                    info["admin_code_len"] = values["DOORBELL_PANEL_ADMIN_CODE_LEN"]
+                    info["user_code_len"] = values["DOORBELL_PANEL_USER_CODE_LEN"]
+                build_info_path(out_path).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+                self.log(f"[Build] SUCCESS -> flasher/builds/{out_name} ({out_path.stat().st_size} bytes, signed)\n")
+                self.post_ui(_on_done)
+                return
 
             merge_cmd = [
                 python_exe,
@@ -2775,18 +3096,12 @@ class DoorbellFlasherApp:
                 self.log("[Build] ERROR: esptool merge-bin failed.\n")
                 return
 
-            info: Dict[str, Any] = {"role": prefix, "profile": "production" if production else "development"}
+            info = {"role": prefix, "profile": "production" if production else "development"}
             if is_panel:
                 info["admin_code_len"] = values["DOORBELL_PANEL_ADMIN_CODE_LEN"]
                 info["user_code_len"] = values["DOORBELL_PANEL_USER_CODE_LEN"]
             build_info_path(out_path).write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
             self.log(f"[Build] SUCCESS -> flasher/builds/{out_name} ({out_path.stat().st_size} bytes)\n")
-
-            def _on_done() -> None:
-                self._update_last_build_label(out_name)
-                for card in self._device_cards:
-                    card.refresh_firmware_list()
-
             self.post_ui(_on_done)
         except Exception as exc:
             self.log(f"[Build] Exception: {exc}\n")
@@ -2796,6 +3111,116 @@ class DoorbellFlasherApp:
                 self.btn_build.configure(state=tk.NORMAL)
 
             self.post_ui(_unlock)
+
+    def _finish_burn_build(
+        self,
+        build_dir: Path,
+        overlay: Dict[str, str],
+        bootloader_bin: Path,
+        part_bin: Path,
+        app_bin: Path,
+        signing_key: Path,
+        out_path: Path,
+        python_exe: str,
+        fw_dir: Path,
+        env: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        """Check the resolved Burn config and layout, sign bootloader + app with the one-time key, and merge.
+
+        Returns the layout facts for the build-info sidecar, or None after logging the reason.
+        """
+        sdk_lines = (build_dir / "sdkconfig").read_text(encoding="utf-8", errors="ignore").splitlines()
+        problems = check_sdkconfig_overlay(build_dir / "sdkconfig", overlay)
+        if "CONFIG_COMPILER_OPTIMIZATION_SIZE=y" not in sdk_lines:
+            problems.append("expected 'CONFIG_COMPILER_OPTIMIZATION_SIZE=y'")
+        if problems:
+            self.log("[Build] ERROR: the resolved Burn configuration differs from firmware/sdkconfig.burn:\n")
+            for p in problems:
+                self.log(f"         - {p}\n")
+            return None
+
+        pt_offset = int(overlay["CONFIG_PARTITION_TABLE_OFFSET"].split("=", 1)[1], 0)
+        part_data = part_bin.read_bytes()
+        try:
+            layout = burn_layout_from_partition_table(parse_partition_table(part_data))
+        except ValueError as exc:
+            self.log(f"[Build] ERROR: Burn partition table: {exc}\n")
+            return None
+
+        signed_dir = build_dir / "signed"
+        signed_dir.mkdir(exist_ok=True)
+        signed_boot = signed_dir / "bootloader-signed.bin"
+        signed_app = signed_dir / "app-signed.bin"
+        espsecure = [python_exe, "-m", "espsecure"]
+        self.log("[Build] Signing bootloader and app with the one-time Secure Boot v2 key\n")
+        for src, dst in ((bootloader_bin, signed_boot), (app_bin, signed_app)):
+            dst.unlink(missing_ok=True)
+            rc = self._run_logged_cmd(
+                espsecure + ["sign-data", "--version", "2", "--keyfile", str(signing_key), "--output", str(dst), str(src)],
+                cwd=fw_dir, env=env,
+            )
+            if rc != 0 or not dst.is_file():
+                self.log(f"[Build] ERROR: espsecure sign-data failed for {src.name}.\n")
+                return None
+            rc = self._run_logged_cmd(
+                espsecure + ["verify-signature", "--version", "2", "--keyfile", str(signing_key), str(dst)],
+                cwd=fw_dir, env=env,
+            )
+            if rc != 0:
+                self.log(f"[Build] ERROR: signature verification failed for {dst.name}.\n")
+                return None
+
+        digest_file = signed_dir / "secure_boot_key_digest.bin"
+        digest_file.unlink(missing_ok=True)
+        rc = self._run_logged_cmd(
+            espsecure + ["digest-sbv2-public-key", "--keyfile", str(signing_key), "--output", str(digest_file)],
+            cwd=fw_dir, env=env,
+        )
+        if rc != 0 or not digest_file.is_file():
+            self.log("[Build] ERROR: cannot compute the public key digest.\n")
+            return None
+        key_digest = digest_file.read_bytes().hex()
+
+        boot_size, app_size = signed_boot.stat().st_size, signed_app.stat().st_size
+        boot_end = 0x1000 + boot_size
+        if boot_end > pt_offset:
+            self.log(
+                f"[Build] ERROR: signed bootloader ends at 0x{boot_end:x}, past the partition table at 0x{pt_offset:x}. "
+                "Raise CONFIG_PARTITION_TABLE_OFFSET in firmware/sdkconfig.burn and move partitions_burn.csv.\n"
+            )
+            return None
+        if app_size > layout["app_size"]:
+            self.log(f"[Build] ERROR: signed app ({app_size} B) does not fit the factory partition ({layout['app_size']} B).\n")
+            return None
+        self.log(
+            f"[Build] Signed bootloader 0x{boot_size:x} B (0x{pt_offset - boot_end:x} B free before the partition table); "
+            f"signed app {app_size} B ({100 * (layout['app_size'] - app_size) // layout['app_size']} % of the factory slot free)\n"
+        )
+
+        # "keep": rewriting the flash parameters in a signed image header would invalidate its signature
+        merge_cmd = [
+            python_exe, "-m", "esptool", "--chip", "esp32", "merge-bin", "-o", str(out_path),
+            "--flash-mode", "keep", "--flash-freq", "keep", "--flash-size", "keep",
+            "0x1000", str(signed_boot), hex(pt_offset), str(part_bin), hex(layout["app_offset"]), str(signed_app),
+        ]
+        rc = self._run_logged_cmd(merge_cmd, cwd=fw_dir, env=env)
+        if rc != 0 or not out_path.is_file():
+            self.log("[Build] ERROR: esptool merge-bin failed.\n")
+            return None
+        merged = out_path.read_bytes()
+        for offset, part in ((0x1000, signed_boot.read_bytes()), (pt_offset, part_data), (layout["app_offset"], signed_app.read_bytes())):
+            if merged[offset : offset + len(part)] != part:
+                out_path.unlink(missing_ok=True)
+                self.log(f"[Build] ERROR: merged image differs from the signed input at 0x{offset:x}; output removed.\n")
+                return None
+
+        self.log(f"[Build] Secure Boot v2 public key digest: {key_digest}\n")
+        return {
+            "partition_table_offset": pt_offset,
+            **layout,
+            "secure_boot_key_digest": key_digest,
+            "chip_rev_min": "v3.0",
+        }
 
     def _run_logged_cmd(
         self,
@@ -3038,6 +3463,180 @@ class DoorbellFlasherApp:
             self.post_ui(lambda: card.set_status("Flash error", "#b33a3a", 0.0))
         finally:
             self.post_ui(lambda: card.set_busy(False))
+
+    def worker_burn_device(
+        self,
+        card: DeviceCard,
+        fw_path: Path,
+        info: Dict[str, Any],
+        panel_fields: Optional[Tuple[str, str, str, str]],
+    ) -> None:
+        """Irreversible Burn (ADR 0015): eFuse pre-check, one erase-all write of the signed image (+ encrypted panel
+        NVS and its key partition), then a controlled first boot that burns the eFuses and encrypts the flash."""
+        port = card.port
+        python_exe = str(IDF_VENV_PYTHON if IDF_VENV_PYTHON.is_file() else sys.executable)
+
+        def status(text: str, color: str = "#b36b00", pct: Optional[float] = None) -> None:
+            self.post_ui(lambda: card.set_status(text, color, pct))
+
+        self.log(f"\n[{port}] ===== BURN '{fw_path.name}' (role {info.get('role')}) =====\n")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+
+                # 1. Layout from the image's own partition table; the sidecar only says where the table is
+                raw = fw_path.read_bytes()
+                pt_off = int(info["partition_table_offset"])
+                layout = burn_layout_from_partition_table(parse_partition_table(raw[pt_off : pt_off + 0xC00]))
+                app_off = layout["app_offset"]
+                if raw[0x1000] != 0xE9 or len(raw) <= app_off or raw[app_off] != 0xE9:
+                    raise ValueError("image does not contain a bootloader at 0x1000 and an app at the factory offset")
+                for key in ("nvs_offset", "nvs_keys_offset", "app_offset"):
+                    if int(info.get(key, -1)) != layout[key]:
+                        raise ValueError(f"build info {key} does not match the image's partition table")
+                boot_file, app_file = tmp / "boot_and_pt.bin", tmp / "app.bin"
+                boot_file.write_bytes(raw[0x1000 : pt_off + 0x1000])
+                app_file.write_bytes(raw[app_off:])
+                images: List[Tuple[int, Path]] = [(0x1000, boot_file), (app_off, app_file)]
+
+                # 2. eFuse pre-check: refuse anything but a fresh v3.x chip with coding scheme NONE
+                efuse_json = tmp / "efuse.json"
+                rc = self._run_logged_cmd(
+                    [python_exe, "-m", "espefuse", "--chip", "esp32", "-p", port, "--before", "default-reset",
+                     "summary", "--format", "json", "--file", str(efuse_json)],
+                    cwd=PROJECT_ROOT,
+                )
+                if rc != 0 or not efuse_json.is_file():
+                    raise RuntimeError("espefuse could not read the chip's eFuses")
+                problems = burn_efuse_problems(json.loads(efuse_json.read_text(encoding="utf-8")))
+                if problems:
+                    for p in problems:
+                        self.log(f"[{port}] Burn refused: {p}\n")
+                    status("Burn refused (see log)", "#b33a3a", 0.0)
+                    return
+                self.log(f"[{port}] eFuse pre-check passed (fresh chip, rev >= v3.0, coding scheme NONE).\n")
+
+                # 3. Panel: encrypted NVS with a host-generated key partition; verified by decrypting it again
+                if panel_fields is not None:
+                    status("Burn: preparing encrypted NVS...", "#b36b00", 5.0)
+                    admin_code, user_code, ssid, pw = panel_fields
+                    nvs_gen = [python_exe, "-m", "esp_idf_nvs_partition_gen"]
+                    keys_file, csv_path = tmp / "nvs_keys.bin", tmp / "nvs.csv"
+                    enc_file, plain_file, dec_file = tmp / "nvs_enc.bin", tmp / "nvs_plain.bin", tmp / "nvs_dec.bin"
+                    keys_file.write_bytes(make_nvs_keys_partition())
+                    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["key", "type", "encoding", "value"])
+                        writer.writerow(["doorbell", "namespace", "", ""])
+                        writer.writerow(["panel_cfg", "data", "hex2bin", pack_panel_cfg_blob(ssid, pw, admin_code, user_code).hex()])
+                    size = hex(layout["nvs_size"])
+                    steps = [
+                        nvs_gen + ["encrypt", str(csv_path), str(enc_file), size, "--inputkey", str(keys_file), "--outdir", str(tmp)],
+                        nvs_gen + ["generate", str(csv_path), str(plain_file), size, "--outdir", str(tmp)],
+                        nvs_gen + ["decrypt", str(enc_file), str(keys_file), str(dec_file), "--outdir", str(tmp)],
+                    ]
+                    for cmd in steps:
+                        if self._run_logged_cmd(cmd, cwd=tmp) != 0:
+                            raise RuntimeError("NVS partition generation failed")
+                    enc = enc_file.read_bytes()
+                    if len(enc) != layout["nvs_size"] or dec_file.read_bytes() != plain_file.read_bytes() or enc == plain_file.read_bytes():
+                        raise RuntimeError("encrypted NVS self-check failed (decrypted image differs from the plaintext image)")
+                    images += [(layout["nvs_offset"], enc_file), (layout["nvs_keys_offset"], keys_file)]
+                    self.log(f"[{port}] Encrypted NVS ready and verified ({'SSID=' + repr(ssid) if ssid else 'no Wi-Fi'}, codes redacted per I-25).\n")
+
+                # 4. One write: erase everything, write plaintext images; the chip encrypts them itself on first boot.
+                # "keep" flash parameters: rewriting the signed bootloader header would break its signature.
+                status("Burn: writing flash...", "#b36b00", 10.0)
+                cmd = [python_exe, "-m", "esptool", "--chip", "esp32", "-p", port, "-b", "460800",
+                       "--before", "default-reset", "--after", "no-reset", "write-flash", "--erase-all",
+                       "--flash-mode", "keep", "--flash-freq", "keep", "--flash-size", "keep"]
+                for offset, path in images:
+                    cmd += [hex(offset), str(path)]
+                rc = self._run_logged_cmd(
+                    cmd,
+                    cwd=PROJECT_ROOT,
+                    progress_cb=lambda pct: status(f"Burn: writing {int(pct)}%...", "#b36b00", 10.0 + pct * 0.5),
+                    progress_weights=[p.stat().st_size for _o, p in images],
+                )
+                if rc != 0:
+                    self.log(f"[{port}] Write FAILED (code {rc}). No eFuse has been burned yet; the chip is still open.\n")
+                    status("Burn write failed", "#b33a3a", 0.0)
+                    return
+                self.log(f"[{port}] Write verified. Starting the first boot - DO NOT UNPLUG.\n")
+
+            # 5. First boot: eFuses + in-place encryption, then the app starts on encrypted flash
+            status("Burn: first boot - DO NOT UNPLUG", "#b33a3a", 65.0)
+            result, errors = self._watch_burn_first_boot(port, status)
+            if result == "ok":
+                self.log(f"[{port}] BURNED: flash encryption completed and the application started. The chip is locked.\n")
+                status("Burned and locked", "#1b7e2b", 100.0)
+                self.post_ui(card.mark_burned)
+            elif result == "errors":
+                self.log(f"[{port}] Burn finished with errors: {' / '.join(errors)}\n")
+                status("Burned - errors (see log)", "#b33a3a", 100.0)
+            else:
+                self.log(f"[{port}] No completion seen within the time limit; keep the board powered and check it with Monitor.\n")
+                status("Burn result unknown (see log)", "#b33a3a", 80.0)
+        except Exception as exc:
+            self.log(f"[{port}] Burn error: {exc}\n")
+            status("Burn error (see log)", "#b33a3a", 0.0)
+        finally:
+            self.post_ui(lambda: card.set_busy(False))
+
+    def _watch_burn_first_boot(
+        self, port: str, status: Callable[..., None], timeout_s: float = 150.0
+    ) -> Tuple[str, List[str]]:
+        """Reset into normal boot without toggling download mode and follow the first-boot log.
+
+        Returns ("ok" | "errors" | "timeout", error lines). The port is opened with DTR/RTS released so opening it
+        cannot reset the chip in the middle of the encryption pass.
+        """
+        errors: List[str] = []
+        fe_done = app_started = False
+        settle_until: Optional[float] = None
+        ser = serial.Serial()
+        ser.port, ser.baudrate, ser.timeout = port, 115200, 0.2
+        ser.dtr = False
+        ser.rts = False
+        ser.open()
+        try:
+            ser.reset_input_buffer()
+            ser.rts = True  # EN low (DTR released keeps GPIO0 high: normal boot)
+            time.sleep(0.1)
+            ser.rts = False
+            deadline = time.monotonic() + timeout_s
+            pending = ""
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            while time.monotonic() < deadline:
+                pending += decoder.decode(ser.read(512))
+                *lines, pending = pending.split("\n")
+                for line in lines:
+                    line = strip_ansi(line).rstrip("\r")
+                    if not line:
+                        continue
+                    self.log(f"[{port}] | {line}\n")
+                    if "Encrypting partition" in line or "Generating new flash encryption key" in line:
+                        status("Burn: encrypting - DO NOT UNPLUG", "#b33a3a", 75.0)
+                    if _BURN_FE_DONE_RE.search(line):
+                        fe_done = True
+                        status("Burn: encryption done, rebooting...", "#b36b00", 90.0)
+                    elif fe_done and _BURN_APP_START_RE.search(line):
+                        if app_started:
+                            # The app started again inside the settle window: a reboot loop, not a healthy boot
+                            errors.append("application restarted during the first seconds (reboot loop)")
+                            break
+                        app_started = True
+                        # Long enough to cover Wi-Fi / RF calibration start-up (brownout on a weak supply)
+                        settle_until = time.monotonic() + 8.0
+                    if _BURN_ERROR_RE.search(line):
+                        errors.append(line.strip())
+                if settle_until is not None and time.monotonic() >= settle_until:
+                    break
+        finally:
+            ser.close()
+        if app_started:
+            return ("errors" if errors else "ok"), errors
+        return ("errors" if errors else "timeout"), errors
 
     def worker_flash_panel_nvs(
         self,

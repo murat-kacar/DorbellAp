@@ -1,0 +1,5 @@
+# DorbellAp Burn profile partition table (ADR 0015). Used only by the Burn profile build.
+# Name,   Type, SubType,  Offset,  Size,   Flags
+nvs,      data, nvs,      ,        0x6000,
+nvs_keys, data, nvs_keys, ,        0x1000, encrypted
+factory,  app,  factory,  0x20000, 1M,

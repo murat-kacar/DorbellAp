@@ -1,7 +1,7 @@
 # ADR 0015: Production Security Hardening (Secure Boot v2, Flash Encryption, NVS Encryption)
 
-- **Status:** Accepted (2026-11-10) — Option B for the **Production** flasher profile; implementation pending the
-  bench prototype in §6. The **Development** profile stays unhardened.
+- **Status:** Accepted (2026-11-10) — Option B, implemented as the separate flasher **Burn** profile (§7); first
+  hardware run on one spare board per §6. The **Development** and **Production** profiles stay unhardened.
 - **Date:** 2026-11-10
 - **Supersedes (if accepted):** parts of ADR 0013 (offline, no OTA, UART re-flash) and AGENTS.md §8 item 5
   (`I-2`, `I-16`, `I-17`: Secure Boot / flash encryption / NVS encryption stay disabled)
@@ -64,7 +64,7 @@ fielded panels (re-provision + re-pair).
 | :--- | :--- |
 | 1. Threat model | **In scope** — physical flash readout and firmware replacement must be prevented |
 | 2. Update path | **None (Option B)** — devices keep the firmware they ship with |
-| 3. Key custody | **Owner** keeps the Secure Boot v2 signing key offline (encrypted USB + second backup); never in the repo or on the build PC after use |
+| 3. Key custody | **No stored key** (revised 2026-11-10, was: owner keeps it offline): every Burn build creates a one-time Secure Boot v2 key, signs with it and destroys it. Burned chips only keep its public-key digest and can never be re-flashed, so a kept key would have no use and would only be something to steal or lose |
 | 4. Fielded devices | **None in the field** — no migration needed |
 
 Consequences of Option B:
@@ -76,13 +76,55 @@ Consequences of Option B:
   match the `nvs_keys` partition prepared at the factory; the exact sequence is validated in the prototype.
 - Flashing a Production image to a chip and powering it is irreversible for that chip. The flasher must require an
   explicit confirmation and must keep Development boards on the Development profile.
-- The signing key is only needed to build (sign) Production images; losing it does not brick shipped devices, but new
-  devices would then use a new key. Leaking it does not allow re-flashing shipped devices (UART flashing is closed by
-  release-mode flash encryption).
+- One-time keys: each Burn build has its own key digest (recorded in the build-info sidecar), and all chips burned
+  from the same `_burn.bin` share it. Knowing a key would not help an attacker: burned chips accept no new image
+  (UART download mode disabled, release flash encryption), and a blank chip accepts any key anyway.
 
 ## 6. Next step (one irreversible action, on one spare board only)
 
-Prototype the chosen option on **one spare bench board** in flash-encryption *development* mode with Secure Boot v2
-disabled, to measure the new bootloader size and confirm the partition-table offset and `nvs_keys` layout. Only after
-that measurement are the flasher's Production profile, partition table and provisioning flow extended with the
-eFuse steps.
+The bootloader size and partition layout were measured on the host instead (§7, F10–F12), so no development-mode
+prototype is needed. The first hardware run is the Burn flow itself on **one spare ESP32-D0WD-V3 rev v3.x board**
+(not the XMC-flash board), signed with the build's one-time key: confirm the first-boot log (Secure Boot digest burned,
+"Flash encryption completed", app starts, panel boots with the provisioned codes / module generates its NVS keys),
+then the acceptance rows of the production checklist. Only after that run are further boards burned.
+
+**First run, 2026-11-10 (panel, COM33, ESP32-D0WD-V3 rev v3.1, generic 4 MB flash):** burn succeeded — every boot
+shows `secure boot v2 enabled`, `Signature verified successfully!`, `Flash encryption mode is RELEASE`
+(`0 plaintext flashes left`), the F11 partition table, and the app reads the encrypted NVS (`Loaded 0 registered
+apartment(s)`, no blank-NVS / unreadable-cfg warning). The board then browns out at the first full RF calibration
+(`phy_init: falling back to full calibration` → `Brownout detector was triggered`) on every boot, including power-on;
+the owner attributes it to the board's on-board 3.3 V regulator. Not a Burn defect, but on a burned board it can only
+be fixed in hardware, hence checklist step 5.0 (power check before burning). The flasher now reports brownouts and
+reboot loops during the first boot as errors. Repeat the run on another board with an adequate supply.
+
+## 7. Implementation (2026-11-10)
+
+On the owner's request the hardening is a **third flasher profile, Burn**, instead of changing Production: Production
+remains the unlocked `-Os` release build used to bench-test exactly the code that is burned.
+
+| # | Fact (host measurement, ESP-IDF v6.1) | Source |
+| :--- | :--- | :--- |
+| F10 | Burn bootloader (SBv2 + release FE) `0xb000` B; signed (+4 KB signature sector) `0xc000` B, ends at `0xd000` | panel `build_burn` |
+| F11 | Partition table moved to `0x10000`: `nvs` `0x11000` (24 KB), `nvs_keys` `0x17000` (4 KB, encrypted), `factory` `0x20000` (1 MB) | `firmware/partitions_burn.csv` |
+| F12 | Panel app `-Os` with SBv2/FE/NVS encryption `0xe0000` B unsigned (12 % of the slot free) | panel `build_burn` |
+| F13 | `nvs_partition_gen --keygen` draws keys from Python `random`; the flasher generates `nvs_keys` with `secrets` and passes `--inputkey` | `esp_idf_nvs_partition_gen` source |
+| F14 | `nvs_flash_init()` regenerates NVS keys on **any** key-partition read error, orphaning provisioned NVS | `nvs_api.cpp` `nvs_flash_init` |
+| F15 | ESP32 has no Secure Download Mode; the choices are "permanently disabled" (IDF recommendation) or "enabled" | `bootloader/Kconfig.projbuild` |
+
+Design:
+
+- **Build:** `firmware/sdkconfig.burn` overlay on a copy of the role's sdkconfig in `firmware/<role>/build_burn/`
+  (`-Os`, `CONFIG_ESP32_REV_MIN_3`, SBv2 RSA, release FE, UART download mode permanently disabled (F15), NVS
+  encryption with the flash-encryption scheme, custom table F11). The flasher checks that kconfgen kept every overlay
+  line, creates a one-time RSA-3072 key in a temporary folder outside the project, signs bootloader and app with
+  `espsecure sign-data --version 2`, overwrites and deletes the key, verifies both signatures, checks the signed bootloader ends before the table,
+  merges with flash parameters `keep` (a rewritten header would break the signature) and records the public-key digest
+  in the build-info sidecar. Output: `<role>_<ts>_burn.bin`.
+- **Flash (per device, typed confirmation):** `espefuse summary` pre-check refuses anything but a fresh rev ≥ v3.0 chip
+  with coding scheme NONE, no key in BLOCK1/2 and FE/SB not yet enabled. Panel: host-generated `nvs_keys` (F13) and an
+  NVS image encrypted with it, verified by decrypting it back to the plaintext image. One `write-flash --erase-all`
+  writes bootloader + table, app and (panel) NVS + `nvs_keys`; the module gets blank NVS and generates its own keys.
+  The flasher then resets the chip with DTR released (no accidental download mode / reset during encryption) and
+  follows the first-boot log until the app has started on encrypted flash.
+- **Firmware (F14):** with `CONFIG_NVS_ENCRYPTION` the storage component generates keys only for a **blank**
+  `nvs_keys` partition; a corrupt one fails closed (I-13: no implicit erase).
