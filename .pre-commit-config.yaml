@@ -1,0 +1,25 @@
+# Hook layout and astyle settings follow ESP-IDF v6.1 .pre-commit-config.yaml; ruff matches CI (0.17.4).
+# Enable once with:  pip install pre-commit && pre-commit install
+# Format the whole tree once with:  pre-commit run --all-files
+exclude: "^(graphify-out/|firmware/[^/]+/(build|build_burn|managed_components)/|test/[^/]+/build/)"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.17.4"
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: ["--fix", "--show-fixes"]
+  - repo: https://github.com/espressif/astyle_py.git
+    rev: v1.0.5
+    hooks:
+      - id: astyle_py
+        args: ["--astyle-version=3.4.7", "--rules=tools/astyle-rules.yml"]

@@ -1,0 +1,4 @@
+# C formatting rules for astyle_py (pre-commit). Options identical to ESP-IDF v6.1 tools/ci/astyle-rules.yml DEFAULT.
+# Generated / third-party folders are excluded in .pre-commit-config.yaml.
+DEFAULT:
+  options: "--style=otbs --attach-namespaces --attach-classes --indent=spaces=4 --convert-tabs --align-reference=name --keep-one-line-statements --pad-header --pad-oper --unpad-paren --max-continuation-indent=120"

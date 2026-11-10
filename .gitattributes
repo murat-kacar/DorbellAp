@@ -1,0 +1,11 @@
+# Line endings: LF in the repository and in working copies (matches .editorconfig), independent of core.autocrlf
+* text=auto eol=lf
+
+# Windows batch files need CRLF for cmd.exe
+*.bat text eol=crlf
+
+# Binary artifacts never get line-ending conversion
+*.bin binary
+*.png binary
+*.jpg binary
+*.pdf binary

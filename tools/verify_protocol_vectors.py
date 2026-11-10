@@ -3,12 +3,15 @@
 Comprehensive Host Verification & Unit Test Suite for DorbellAp.
 
 Verifies:
-1. NVS Blob Binary Layouts & CRC32 (`panel_cfg` = 168 B, `panel_apt` = 48 B, `unit_state` = 152 B) + Write-Ahead Counter (`+100`).
-2. 12-byte AAD Header Serialization, Transport Flag Masking (`is_retry`, `is_bcast`), and 13-byte AES-128-CCM Nonce Layout.
+1. NVS Blob Binary Layouts & CRC32 (`panel_cfg` = 168 B, `panel_apt` = 48 B, `unit_state` = 152 B)
+   + Write-Ahead Counter (`+100`).
+2. 12-byte AAD Header Serialization, Transport Flag Masking (`is_retry`, `is_bcast`), and 13-byte AES-128-CCM
+   Nonce Layout.
 3. X25519 ECDH + HKDF-SHA256 (`"DorbellAp-Pair-v1"`) Pairing Key Agreement & Provisioning Blob AEAD.
 4. Deterministic Keypad EBNF Grammar & Lockout State Machine (`I-19`, `I-20`, `I-44`, `docs/protocol.md` §6.1–6.2).
 5. Pre-Crypto Destination Filtering (`I-53`), Idempotent ACK Deduplication Cache (`I-29`), and Monotonic Replay Floor.
-6. `OPEN_DOOR` Reboot Replay & Withheld-Packet Freshness Protection via `panel_boot_id` + 64-bit `STATUS_CHALLENGE` (`I-7`, `I-18`).
+6. `OPEN_DOOR` Reboot Replay & Withheld-Packet Freshness Protection via `panel_boot_id` + 64-bit
+   `STATUS_CHALLENGE` (`I-7`, `I-18`).
 7. Two-Phase Pairing Commit, 1.5 s Multi-Module Collision Abort, and Same-MAC Re-Pairing Cleanup (`I-30`, `I-45`).
 """
 
@@ -17,19 +20,20 @@ import os
 import struct
 import sys
 import zlib
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass
+
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from factory_provision_panel import PANEL_CFG_FORMAT_FULL, pack_panel_cfg_blob
-
+from panel_cfg_blob import PANEL_CFG_FORMAT_FULL, pack_panel_cfg_blob
 
 # ---------------------------------------------------------------------------
 # 1. NVS Blob Layout & Write-Ahead Counter Tests (I-50)
 # ---------------------------------------------------------------------------
+
 
 def test_nvs_blob_layouts_and_write_ahead() -> None:
     # 1. doorbell_panel_cfg_blob_t: 168 bytes
@@ -72,6 +76,7 @@ def test_nvs_blob_layouts_and_write_ahead() -> None:
 # 2. Wire Framing, Nonce Layout & Dual-Path Broadcast AAD Masking (I-8, I-33)
 # ---------------------------------------------------------------------------
 
+
 def test_wire_framing_and_ccm_aead() -> None:
     k_apt = os.urandom(16)
     magic = 0xDB
@@ -111,14 +116,16 @@ def test_wire_framing_and_ccm_aead() -> None:
     tampered_aad[4] = 13  # spoofed src_id
     try:
         aesccm.decrypt(nonce, ciph_and_tag, bytes(tampered_aad))
-        raise AssertionError("Tampered AAD should have failed AEAD verification")
-    except Exception:
+    except InvalidTag:
         pass
+    else:
+        raise AssertionError("Tampered AAD should have failed AEAD verification")
 
 
 # ---------------------------------------------------------------------------
 # 3. X25519 + HKDF-SHA256 Key Agreement & Provisioning Blob Tests (I-8, I-26)
 # ---------------------------------------------------------------------------
+
 
 def test_x25519_hkdf_derivation() -> None:
     panel_priv = x25519.X25519PrivateKey.generate()
@@ -149,6 +156,7 @@ def test_x25519_hkdf_derivation() -> None:
 # 4. Keypad EBNF Grammar & Lockout Reference Model Tests (I-19, I-20, I-44)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class KeypadModel:
     admin_code: str = "12345678"
@@ -164,7 +172,7 @@ class KeypadModel:
     def _apply_wrong_penalty(self) -> None:
         self.wrong_code_count += 1
         if self.wrong_code_count >= 5:
-            dur = 60 * (2 ** self.lockout_level)
+            dur = 60 * (2**self.lockout_level)
             if dur > 900:
                 dur = 900
             self.lockout_level += 1
@@ -175,7 +183,7 @@ class KeypadModel:
         self.lockout_level = 0
         self.lockout_remaining_s = 0
 
-    def _parse_apt(self, s: str) -> Optional[int]:
+    def _parse_apt(self, s: str) -> int | None:
         if not s or len(s) > 3 or not s.isdigit() or s[0] == "0":
             return None
         v = int(s)
@@ -304,15 +312,15 @@ def test_keypad_grammar_and_lockout_edge_cases() -> None:
         "#",
         "**#",
         "*1234*#",
-        "*00000000*9*1#",           # unknown cmd_id 9
-        "*00000000*1*0#",           # apt 0 invalid
-        "*00000000*1*01#",          # leading zero invalid
-        "*00000000*1*100#",         # apt > 99 invalid
-        "*00000000*2*5*6#",         # apt1 != apt2 mismatch in Step 3
-        "*00000000*3*5678*5679#",   # new user code confirmation mismatch in Step 3
-        "*00000000*3*567*567#",     # wrong user code length (3 != 4) in Step 3
+        "*00000000*9*1#",  # unknown cmd_id 9
+        "*00000000*1*0#",  # apt 0 invalid
+        "*00000000*1*01#",  # leading zero invalid
+        "*00000000*1*100#",  # apt > 99 invalid
+        "*00000000*2*5*6#",  # apt1 != apt2 mismatch in Step 3
+        "*00000000*3*5678*5679#",  # new user code confirmation mismatch in Step 3
+        "*00000000*3*567*567#",  # wrong user code length (3 != 4) in Step 3
         "*00000000*4*87654321*87654322#",  # new admin code mismatch in Step 3
-        "*00000000*5*1#",           # extra arg to cmd 5
+        "*00000000*5*1#",  # extra arg to cmd 5
     ]
     for seq in malformed_inputs:
         res = kp.evaluate(seq)
@@ -353,13 +361,14 @@ def test_keypad_grammar_and_lockout_edge_cases() -> None:
 # 5. OPEN_DOOR Challenge-Response, Dedup & Replay Simulation (I-7, I-18, I-29)
 # ---------------------------------------------------------------------------
 
+
 def test_open_door_challenge_and_deduplication() -> None:
     panel_boot_id = 0xA1B2C3D4
     rx_floor = 10
     active_challenge = 0
     challenge_deadline_ms = 0
     door_pulse_count = 0
-    last_ack: Optional[Tuple[int, int, str, int]] = None  # (tx_counter, seq_id, status, nonce)
+    last_ack: tuple[int, int, str, int] | None = None  # (tx_counter, seq_id, status, nonce)
 
     def panel_process_open_door(now_ms: int, tx_counter: int, seq_id: int, req_boot_id: int, echo_nonce: int):
         nonlocal rx_floor, active_challenge, challenge_deadline_ms, door_pulse_count, last_ack
@@ -398,12 +407,16 @@ def test_open_door_challenge_and_deduplication() -> None:
     assert door_pulse_count == 0
 
     # Retry of Round 0 (if STATUS_CHALLENGE ACK was lost) -> Dedup cache returns same STATUS_CHALLENGE
-    status_retry, chal_retry = panel_process_open_door(now_ms=1400, tx_counter=11, seq_id=1, req_boot_id=0, echo_nonce=0)
+    status_retry, chal_retry = panel_process_open_door(
+        now_ms=1400, tx_counter=11, seq_id=1, req_boot_id=0, echo_nonce=0
+    )
     assert status_retry == "STATUS_CHALLENGE" and chal_retry == chal
     assert door_pulse_count == 0
 
     # Round 1: unit echoes (panel_boot_id, chal) within 2000 ms -> Panel unlocks door once!
-    status2, _ = panel_process_open_door(now_ms=1450, tx_counter=12, seq_id=2, req_boot_id=panel_boot_id, echo_nonce=chal)
+    status2, _ = panel_process_open_door(
+        now_ms=1450, tx_counter=12, seq_id=2, req_boot_id=panel_boot_id, echo_nonce=chal
+    )
     assert status2 == "STATUS_OK"
     assert door_pulse_count == 1
 
@@ -423,13 +436,13 @@ def test_open_door_challenge_and_deduplication() -> None:
 
 
 def test_payload_sizes() -> None:
-    assert struct.calcsize(">II") == 8                # RING_REQ
-    assert struct.calcsize(">IHBI") == 11             # RING_ACK
-    assert struct.calcsize(">IIQ") == 16              # OPEN_DOOR_REQ
-    assert struct.calcsize(">IHBIIQ") == 23           # OPEN_DOOR_ACK
-    assert struct.calcsize(">IIIIHHHHBbB6sBBH") == 37 # HEARTBEAT_REQ
-    assert struct.calcsize(">IHBII") == 15            # HEARTBEAT_ACK / PAIR_COMPLETE_ACK
-    assert struct.calcsize(">I6sBB") == 12            # PAIR_COMPLETE
+    assert struct.calcsize(">II") == 8  # RING_REQ
+    assert struct.calcsize(">IHBI") == 11  # RING_ACK
+    assert struct.calcsize(">IIQ") == 16  # OPEN_DOOR_REQ
+    assert struct.calcsize(">IHBIIQ") == 23  # OPEN_DOOR_ACK
+    assert struct.calcsize(">IIIIHHHHBbB6sBBH") == 37  # HEARTBEAT_REQ
+    assert struct.calcsize(">IHBII") == 15  # HEARTBEAT_ACK / PAIR_COMPLETE_ACK
+    assert struct.calcsize(">I6sBB") == 12  # PAIR_COMPLETE
 
 
 if __name__ == "__main__":
@@ -439,5 +452,8 @@ if __name__ == "__main__":
     test_keypad_grammar_and_lockout_edge_cases()
     test_open_door_challenge_and_deduplication()
     test_payload_sizes()
-    print("ALL 6 HOST VERIFICATION SUITES (NVS, AEAD, X25519/HKDF, KEYPAD EBNF/LOCKOUT, CHALLENGE/DEDUP, PAYLOADS) PASSED.")
+    print(
+        "ALL 6 HOST VERIFICATION SUITES (NVS, AEAD, X25519/HKDF, KEYPAD EBNF/LOCKOUT, CHALLENGE/DEDUP, PAYLOADS) "
+        "PASSED."
+    )
     sys.exit(0)

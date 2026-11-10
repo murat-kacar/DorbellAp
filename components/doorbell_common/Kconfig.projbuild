@@ -56,6 +56,7 @@ menu "Doorbell System Configuration"
 
         config DOORBELL_PAIRING_WINDOW_S
             int "Pairing window (s)"
+            depends on DOORBELL_ROLE_PANEL
             range 10 120
             default 20
             help
@@ -133,39 +134,49 @@ menu "Doorbell System Configuration"
 
             config DOORBELL_PANEL_GPIO_ROW0
                 int "Keypad row 0 GPIO"
+                range 0 33
                 default 13
             config DOORBELL_PANEL_GPIO_ROW1
                 int "Keypad row 1 GPIO"
+                range 0 33
                 default 14
             config DOORBELL_PANEL_GPIO_ROW2
                 int "Keypad row 2 GPIO"
+                range 0 33
                 default 27
             config DOORBELL_PANEL_GPIO_ROW3
                 int "Keypad row 3 GPIO"
+                range 0 33
                 default 26
             config DOORBELL_PANEL_GPIO_COL0
                 int "Keypad column 0 GPIO"
+                range 0 39
                 default 25
             config DOORBELL_PANEL_GPIO_COL1
                 int "Keypad column 1 GPIO"
+                range 0 39
                 default 33
             config DOORBELL_PANEL_GPIO_COL2
                 int "Keypad column 2 GPIO"
+                range 0 39
                 default 32
             config DOORBELL_PANEL_GPIO_DOOR_RELAY
                 int "Door relay GPIO"
+                range 0 33
                 default 23
             config DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW
                 bool "Door relay is driven LOW to open"
                 default y
             config DOORBELL_PANEL_GPIO_STATUS_LED
                 int "Status LED GPIO"
+                range 0 33
                 default 2
             config DOORBELL_PANEL_GPIO_RESET_BTN
-                int "Hidden code reset button GPIO"
+                int "Hidden factory reset button GPIO"
+                range 0 39
                 default 19
             config DOORBELL_PANEL_RESET_BTN_ACTIVE_LOW
-                bool "Code reset button pulls the GPIO LOW"
+                bool "Factory reset button pulls the GPIO LOW"
                 default y
             config DOORBELL_PANEL_RESET_BTN_INTERNAL_PULL
                 bool "Enable the internal pull resistor"
@@ -266,7 +277,7 @@ menu "Doorbell System Configuration"
 
         endmenu
 
-        menu "Code reset button"
+        menu "Factory reset button"
 
             config DOORBELL_PANEL_RESET_MIN_HOLD_S
                 int "Minimum hold (s)"
@@ -306,18 +317,22 @@ menu "Doorbell System Configuration"
 
             config DOORBELL_UNIT_GPIO_BELL_RELAY
                 int "Bell relay GPIO"
+                range 0 33
                 default 4
             config DOORBELL_UNIT_BELL_RELAY_ACTIVE_HIGH
                 bool "Bell relay is driven HIGH to ring"
                 default y
             config DOORBELL_UNIT_GPIO_DOOR_BTN
                 int "Door-open button GPIO"
+                range 0 39
                 default 23
             config DOORBELL_UNIT_GPIO_PAIR_BTN
                 int "Hidden pairing button GPIO"
+                range 0 39
                 default 18
             config DOORBELL_UNIT_GPIO_RESET_BTN
                 int "Hidden reset button GPIO"
+                range 0 39
                 default 19
             config DOORBELL_UNIT_BTNS_ACTIVE_LOW
                 bool "Buttons pull the GPIO LOW when pressed"
@@ -327,6 +342,7 @@ menu "Doorbell System Configuration"
                 default y
             config DOORBELL_UNIT_GPIO_STATUS_LED
                 int "Status LED GPIO"
+                range 0 33
                 default 2
 
         endmenu

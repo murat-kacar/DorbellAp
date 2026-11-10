@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -44,7 +43,7 @@ typedef struct {
 extern SemaphoreHandle_t g_panel_mutex;
 extern doorbell_panel_cfg_blob_t g_panel_cfg;
 extern panel_apt_slot_t g_apt_slots[DOORBELL_MAX_APT_SLOTS];
-extern volatile panel_mode_t g_panel_mode;
+extern _Atomic panel_mode_t g_panel_mode;
 extern uint32_t g_panel_boot_id;
 extern doorbell_relay_t g_door_relay;
 
@@ -56,7 +55,7 @@ void panel_action_start_portal(void);
 void panel_action_cancel_active_mode(void);
 void panel_action_delete_apartment(uint8_t apt_no);
 void panel_action_building_reset(void);
-void panel_action_reset_codes_to_factory(void);
+void panel_action_factory_reset(void);
 
 /* Lockout & Credential Verification (panel_keypad.c) */
 esp_err_t panel_keypad_init(void);

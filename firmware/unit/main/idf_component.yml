@@ -1,5 +1,4 @@
 dependencies:
   idf: ">=6.1.0"
   espressif/button: "^4.2.3"
-  espressif/led_indicator: "^2.1.2"
 

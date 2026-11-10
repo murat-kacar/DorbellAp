@@ -14,15 +14,18 @@ static const char *TAG = "doorbell_storage";
 #define PANEL_CFG_MAGIC  0x44425043UL /* 'DBPC' */
 #define PANEL_APT_MAGIC  0x44425041UL /* 'DBPA' */
 #define UNIT_STATE_MAGIC 0x44425553UL /* 'DBUS' */
+#define FACTORY_WIFI_MAGIC 0x44424657UL /* 'DBFW' */
 #define BLOB_VERSION     1U
 
-_Static_assert(sizeof(doorbell_panel_cfg_blob_t) == 168, "doorbell_panel_cfg_blob_t must be 168 bytes");
-_Static_assert(sizeof(doorbell_panel_apt_blob_t) == 48,  "doorbell_panel_apt_blob_t must be 48 bytes");
-_Static_assert(sizeof(doorbell_unit_state_blob_t) == 152, "doorbell_unit_state_blob_t must be 152 bytes");
+static_assert(sizeof(doorbell_panel_cfg_blob_t) == 168, "doorbell_panel_cfg_blob_t must be 168 bytes");
+static_assert(sizeof(doorbell_panel_factory_wifi_blob_t) == 112, "factory_wifi blob must be 112 bytes");
+static_assert(sizeof(doorbell_panel_apt_blob_t) == 48,  "doorbell_panel_apt_blob_t must be 48 bytes");
+static_assert(sizeof(doorbell_unit_state_blob_t) == 152, "doorbell_unit_state_blob_t must be 152 bytes");
 
 /* Set when an existing panel_cfg blob could not be validated (CRC/magic/version/size). The panel then runs on in-RAM
  * defaults, and saving would overwrite the stored record - including its unique per-device factory codes (I-5) - with
- * the shared built-in ones. Keep the stored blob intact instead (I-13 spirit); recovery is a full Flash NVS (I-14). */
+ * the shared built-in ones. Keep the stored blob intact instead (I-13 spirit); recovery is a full re-flash with the
+ * flasher (I-14). */
 static bool s_panel_cfg_write_protected = false;
 
 static uint32_t compute_crc(const void *data, size_t len_without_crc)
@@ -48,7 +51,7 @@ static esp_err_t storage_secure_nvs_init(void)
     } else {
         ESP_LOGE(TAG, "NVS key partition unusable (%s); keys are never regenerated over it", esp_err_to_name(err));
     }
-    memset(&cfg, 0, sizeof(cfg));
+    memset_explicit(&cfg, 0, sizeof(cfg));
     return err;
 }
 #endif
@@ -124,7 +127,8 @@ esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg)
 #endif
         /* Codes are not logged (I-25); this only flags that the shared built-in codes are active (I-5) */
         ESP_LOGW(TAG, "Blank NVS: initializing panel_cfg with built-in default codes. "
-                      "Provision unique per-device codes (flasher 'Flash NVS') before deployment.");
+                      "Provision unique per-device codes (flasher 'Flash' with the card's code fields) "
+                      "before deployment.");
         return doorbell_storage_panel_save_cfg(out_cfg);
     }
 
@@ -137,7 +141,8 @@ esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     if (s_panel_cfg_write_protected) {
-        ESP_LOGW(TAG, "panel_cfg save refused: stored record is unreadable and kept intact (re-provision with Flash NVS)");
+        ESP_LOGW(TAG, "panel_cfg save refused: stored record is unreadable and kept intact "
+                      "(re-flash the panel with the flasher)");
         return ESP_ERR_INVALID_STATE;
     }
     cfg->magic = PANEL_CFG_MAGIC;
@@ -157,24 +162,114 @@ esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg)
     return err;
 }
 
-esp_err_t doorbell_storage_panel_reset_codes_to_factory(doorbell_panel_cfg_blob_t *cfg)
+/* ---- Factory building Wi-Fi (the values provisioned by the flasher: Flash / Burn) ----
+ * panel_cfg's Wi-Fi fields change with the portal / console, so the provisioned values are kept in their own record.
+ * It is written once, on the first boot after provisioning (the flasher erases the chip and writes a whole NVS image,
+ * so the record is absent exactly then), and only read afterwards by the hidden-button factory reset. */
+
+esp_err_t doorbell_storage_panel_load_factory_wifi(doorbell_panel_factory_wifi_blob_t *out)
+{
+    if (!out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(DOORBELL_NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    size_t sz = sizeof(*out);
+    err = nvs_get_blob(h, "factory_wifi", out, &sz);
+    nvs_close(h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return err;
+    }
+    if (err == ESP_ERR_NVS_INVALID_LENGTH || (err == ESP_OK && sz != sizeof(*out))) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (out->magic != FACTORY_WIFI_MAGIC || out->version != BLOB_VERSION ||
+        out->crc32 != compute_crc(out, offsetof(doorbell_panel_factory_wifi_blob_t, crc32))) {
+        memset(out, 0, sizeof(*out));
+        return ESP_ERR_INVALID_CRC;
+    }
+    out->wifi_ssid[sizeof(out->wifi_ssid) - 1] = '\0';
+    out->wifi_pass[sizeof(out->wifi_pass) - 1] = '\0';
+    return ESP_OK;
+}
+
+esp_err_t doorbell_storage_panel_snapshot_factory_wifi(const doorbell_panel_cfg_blob_t *cfg)
 {
     if (!cfg) {
         return ESP_ERR_INVALID_ARG;
     }
-    /* Commit to NVS first, then to the caller's copy: a failed save leaves the active codes unchanged */
+    doorbell_panel_factory_wifi_blob_t blob;
+    esp_err_t err = doorbell_storage_panel_load_factory_wifi(&blob);
+    memset_explicit(&blob, 0, sizeof(blob));
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        return err; /* ESP_OK: already recorded; anything else: never overwrite an unreadable record */
+    }
+    blob.magic = FACTORY_WIFI_MAGIC;
+    blob.version = BLOB_VERSION;
+    memcpy(blob.wifi_ssid, cfg->wifi_ssid, sizeof(blob.wifi_ssid));
+    memcpy(blob.wifi_pass, cfg->wifi_pass, sizeof(blob.wifi_pass));
+    blob.crc32 = compute_crc(&blob, offsetof(doorbell_panel_factory_wifi_blob_t, crc32));
+
+    nvs_handle_t h;
+    err = nvs_open(DOORBELL_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(h, "factory_wifi", &blob, sizeof(blob));
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    memset_explicit(&blob, 0, sizeof(blob));
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Recorded the provisioned building Wi-Fi as factory Wi-Fi (SSID '%s')", cfg->wifi_ssid);
+    }
+    return err;
+}
+
+esp_err_t doorbell_storage_panel_factory_reset(doorbell_panel_cfg_blob_t *cfg, uint8_t min_apt, uint8_t max_apt,
+                                               bool *out_nvs_changed)
+{
+    if (!cfg || !out_nvs_changed) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_nvs_changed = false;
+    doorbell_panel_factory_wifi_blob_t fw;
+    esp_err_t fw_err = doorbell_storage_panel_load_factory_wifi(&fw);
+    if (fw_err != ESP_OK) {
+        /* Without a readable factory Wi-Fi record the reset would invent one: refuse, nothing is changed */
+        ESP_LOGE(TAG, "Factory reset refused: factory Wi-Fi record unavailable (%s)", esp_err_to_name(fw_err));
+        memset_explicit(&fw, 0, sizeof(fw));
+        return fw_err;
+    }
+
+    /* Codes, Wi-Fi and lockout first (commit to NVS, then to RAM); registrations only after that succeeded, so a
+     * failed save leaves the panel exactly as it was. Each NVS write is atomic per key: once panel_cfg is saved the
+     * caller must reload from NVS (restart) even if erasing a registration fails, and a retry repeats both steps. */
     doorbell_panel_cfg_blob_t next = *cfg;
     memcpy(next.admin_code, next.factory_admin_code, sizeof(next.admin_code));
     memcpy(next.user_code, next.factory_user_code, sizeof(next.user_code));
+    memcpy(next.wifi_ssid, fw.wifi_ssid, sizeof(next.wifi_ssid));
+    memcpy(next.wifi_pass, fw.wifi_pass, sizeof(next.wifi_pass));
     next.wrong_code_count = 0;
     next.lockout_level = 0;
     next.lockout_remaining_s = 0;
+    memset_explicit(&fw, 0, sizeof(fw));
     esp_err_t err = doorbell_storage_panel_save_cfg(&next);
     if (err == ESP_OK) {
         *cfg = next;
     }
-    memset(&next, 0, sizeof(next));
-    return err;
+    memset_explicit(&next, 0, sizeof(next));
+    if (err != ESP_OK) {
+        return err;
+    }
+    *out_nvs_changed = true;
+    return doorbell_storage_panel_erase_all_apts(min_apt, max_apt);
 }
 
 static void format_apt_key(uint8_t apt_no, char out_key[12])
@@ -275,14 +370,22 @@ esp_err_t doorbell_storage_panel_erase_all_apts(uint8_t min_apt, uint8_t max_apt
     if (err != ESP_OK) {
         return err;
     }
+    /* Erase every slot even if one fails, and report the first failure: a missing key is the normal empty slot */
+    esp_err_t first_err = ESP_OK;
     for (uint8_t apt = min_apt; apt <= max_apt; apt++) {
         char key[12];
         format_apt_key(apt, key);
-        nvs_erase_key(h, key);
+        esp_err_t e = nvs_erase_key(h, key);
+        if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGE(TAG, "Erasing registration %s failed: %s", key, esp_err_to_name(e));
+            if (first_err == ESP_OK) {
+                first_err = e;
+            }
+        }
     }
     err = nvs_commit(h);
     nvs_close(h);
-    return err;
+    return (first_err != ESP_OK) ? first_err : err;
 }
 
 esp_err_t doorbell_storage_panel_next_tx_counter(doorbell_panel_apt_blob_t *apt,

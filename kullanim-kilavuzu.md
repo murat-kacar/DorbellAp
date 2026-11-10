@@ -111,8 +111,16 @@ derlemeden panelde değiştirmek için:
    dakika**) yavaş (1 Hz) yanıp söner ve panel `Doorbell-Setup` adlı Wi-Fi ağını açar. (İptal etmek için `* #`
    tuşlayabilirsiniz.)
 2. Telefon veya bilgisayarla `Doorbell-Setup` ağına bağlanın. Bu ağın WPA3 şifresi, o anki **yönetici şifresidir**.
-3. Tarayıcıda `http://192.168.4.1` adresini açın (bina ağı zaten `192.168.4.x` bloğunu kullanıyorsa `http://10.195.4.1`
-   açılır), bina erişim noktasının Wi-Fi adını (SSID) ve şifresini girip kaydedin.
+   Çoğu telefonda ayar sayfası kendiliğinden açılır ("Ağda oturum açın" bildirimi veya açılan pencere).
+3. Sayfa açılmazsa tarayıcıda `http://192.168.4.1` adresini açın (bina ağı zaten `192.168.4.x` bloğunu kullanıyorsa
+   `http://10.195.4.1` açılır). Sayfada çevredeki Wi-Fi ağları sinyal gücüne göre listelenir: bina ağını seçin, şifresini
+   yazın ve kaydedin.
+   - Ağ listede yoksa **Ağları yeniden tara**'ya basın. Ad yayınlamayan (gizli) bir ağ için **Diğer / gizli ağ**'ı seçip
+     adı elle yazın.
+   - "uyumsuz: erişim noktasında 802.11b kapalı" yazan ağ seçilemez; erişim noktasında 802.11b hızlarını açın
+     (bölüm 1).
+   - Telefonda sayfa açılmıyorsa mobil veriyi kapatın ve "Bu ağda internet yok" uyarısında **Bağlı kal**'ı seçin.
+   - Kurulum sayfasına yalnızca `Doorbell-Setup` ağından erişilir; bina Wi-Fi ağına bağlı bir cihazdan açılmaz.
 4. Panel yeni bilgilerle bina erişim noktasına bağlanmayı dener:
    - **Bağlantı başarılı olursa:** Yeni ayarlar kaydedilir, panel LED'i 2 saniye sabit yanar ve kurulum ağı kapanır.
    - **Bağlantı başarısız olursa (ör. şifre yanlışsa):** Eski ayarlar korunur, web sayfasında hata gösterilir ve panel
@@ -167,11 +175,18 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
 
 ## 6. Sıfırlama
 
-### 6.1. Panel şifre sıfırlama
+### 6.1. Panel fabrika sıfırlama
 
 Panel kutusunun içindeki gizli butonu **10–60 saniye** basılı tutup bırakın (10. saniyede LED sabit yanmaya başlar,
-arada kısa söner; bu sırada bırakın). Değiştirilmiş şifreler silinir; panel etiketteki fabrika şifrelerine döner. Daire
-kayıtları ve bina Wi-Fi bilgileri korunur.
+arada kısa söner; bu sırada bırakın). Panel, yüklendiği (flaşlandığı) ilk andaki haline döner ve yeniden başlar:
+
+- Yönetici ve kullanıcı şifresi **etiketteki fabrika şifrelerine** döner (kurulum ağı `Doorbell-Setup`'ın şifresi de
+  yönetici şifresi olduğu için o da fabrika yönetici şifresi olur).
+- Bina Wi-Fi adı ve şifresi, panel yüklenirken girilen değerlere döner (yüklenirken girilmediyse boş kalır; bölüm 4.2
+  ile ayarlayın).
+- Yanlış şifre kilidi kalkar.
+- **Bütün daire kayıtları silinir.** Daire modüllerinin sıfırlanıp (6.2) yeniden eşleştirilmesi gerekir (bölüm 5).
+
 
 ### 6.2. Daire modülü sıfırlama
 
@@ -233,7 +248,7 @@ sürekli durumuna döner.
 | Kapı açılırken sabit (varsayılan 0,5 saniye) | Kapı açıldı |
 | 1 saniye hızlı yanıp sönme | Hata / yanlış şifre / reddedildi / daire dolu / birden fazla modül |
 | 3 saniye orta hızda yanıp sönme | Daire kayıtlı ama cevap vermiyor |
-| Sabit, arada kısa sönme | Şifre sıfırlama butonu basılı (10–60 sn): şimdi bırakın |
+| Sabit, arada kısa sönme | Fabrika sıfırlama butonu basılı (10–60 sn): şimdi bırakın |
 | Tekrarlayan çift flaş | 20 saniyelik eşleştirme penceresi açık |
 | Seyrek tek flaşlar | Tuş takımı yanlış şifre nedeniyle kilitli veya panelin bina Wi-Fi ağı bağlantısı kopuk |
 
@@ -267,7 +282,7 @@ panel bunu uyarı olarak yazar (bkz. Yapılandırma Ayarları, heartbeat).
 | Zil çalınca panel 1 saniye hızlı yanıp sönüyor | Bu numarada kayıtlı daire yok | Numarayı kontrol edin; gerekiyorsa daireyi eşleştirin |
 | Eşleştirme olmuyor | Modül zaten eşleşmiş, 20 saniye doldu, başka bir modül de eşleştirme modunda ya da panel bina erişim noktasına bağlı değil | Panelin bina Wi-Fi ağına bağlı olduğundan emin olun (4.2); modülü sıfırlayın (6.2), diğer modülleri eşleştirme modundan çıkarın, tekrar deneyin |
 | Tuş takımı şifre kabul etmiyor, LED seyrek flaş yapıyor | Yanlış şifre kilidi | Kilit süresinin bitmesini bekleyin |
-| Şifreler unutuldu | — | Panel şifre sıfırlama (6.1); etiketteki fabrika şifreleri geçerli olur |
+| Şifreler unutuldu | — | Panel fabrika sıfırlama (6.1); etiketteki fabrika şifreleri geçerli olur, daire kayıtları silinir ve modüller yeniden eşleştirilir |
 | Modül sürekli çift flaş yapıyor | Modül eşleşmemiş | Eşleştirin (bölüm 5) |
 | Modül seyrek tek flaş yapıyor | Modül kapsama alanı dışında, erişim noktası (AP) / panel kapalı ya da dairenin kaydı panelden silinmiş | Erişim noktasını ve paneli kontrol edin; daire kaydı silindiyse modülü sıfırlayıp (6.2) yeniden eşleştirin |
 | Kapı açma butonuna basınca modül 3 saniye orta hızda yanıp sönüyor | Panel kapalı veya ağ bağlantısı kopuk | Panelin enerjisini ve erişim noktası (AP) bağlantısını kontrol edin |

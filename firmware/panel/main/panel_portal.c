@@ -1,10 +1,15 @@
 #include "panel_state.h"
+#include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "freertos/task.h"
 #include "esp_http_server.h"
+#include "doorbell_captive_dns.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -12,13 +17,13 @@ static const char *TAG = "panel_portal";
 
 static httpd_handle_t s_httpd = NULL;
 static uint32_t s_portal_ap_ipv4_host = 0;
-static volatile int64_t s_portal_deadline_us = 0;
-static volatile bool s_portal_close_pending = false;
-static volatile bool s_portal_testing = false;
-static volatile bool s_portal_abort = false;
+static _Atomic int64_t s_portal_deadline_us = 0;
+static _Atomic bool s_portal_close_pending = false;
+static _Atomic bool s_portal_testing = false;
+static _Atomic bool s_portal_abort = false;
 /* True while the STA driver holds submitted-but-uncommitted credentials; panel_portal_stop() then restores the
  * committed ones from g_panel_cfg so an aborted test never leaves the panel chasing an untested network. */
-static volatile bool s_sta_cfg_untested = false;
+static _Atomic bool s_sta_cfg_untested = false;
 
 /**
  * @brief Take g_panel_mutex from an httpd handler without risking a deadlock.
@@ -147,37 +152,109 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char current_ssid_esc[192] = {0};
+    char current_ssid[33] = {0};
     if (!portal_take_mutex_or_abort()) {
         return ESP_FAIL;
     }
-    html_escape(g_panel_cfg.wifi_ssid, current_ssid_esc, sizeof(current_ssid_esc));
+    memcpy(current_ssid, g_panel_cfg.wifi_ssid, sizeof(current_ssid) - 1);
     xSemaphoreGive(g_panel_mutex);
 
-    /* Never echo stored passphrase in HTML (I-47) */
-    char page[1600];
-    snprintf(page, sizeof(page),
-             "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-             "<title>Zil Paneli Wi-Fi Kurulumu</title>"
-             "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px;}"
-             "label{display:block;margin-top:14px;font-weight:bold;}"
-             "input{width:100%%;padding:8px;margin-top:4px;box-sizing:border-box;}"
-             "button{margin-top:18px;width:100%%;padding:10px;font-size:16px;}</style></head>"
-             "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
-             "<form method=\"POST\" action=\"/save\">"
-             "<label>Bina Wi-Fi Adı (SSID):</label>"
-             "<input type=\"text\" name=\"ssid\" maxlength=\"32\" value=\"%s\" required>"
-             "<label>Bina Wi-Fi Şifresi (WPA2/WPA3):</label>"
-             "<input type=\"password\" name=\"password\" maxlength=\"63\" placeholder=\"Yeni şifreyi girin\">"
-             "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
-             "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, 1 sn hızlı yanıp sönme = başarısız.</p>"
-             "<button type=\"submit\">Kaydet ve Bağlan</button>"
-             "</form></body></html>",
-             current_ssid_esc);
+    doorbell_net_ap_info_t nets[DOORBELL_NET_SCAN_MAX];
+    uint32_t gen = 0;
+    bool scanning = false;
+    size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, &scanning);
 
+    /* Preselect the configured network if it is in the list, otherwise the strongest compatible one */
+    int selected = -1;
+    for (size_t i = 0; i < count && selected < 0; i++) {
+        if (current_ssid[0] != '\0' && strcmp(nets[i].ssid, current_ssid) == 0 && nets[i].supports_11b) {
+            selected = (int)i;
+        }
+    }
+    for (size_t i = 0; i < count && selected < 0; i++) {
+        if (nets[i].supports_11b) {
+            selected = (int)i;
+        }
+    }
+
+    char esc[200]; /* 32-byte SSID, every byte escaped to at most 6 characters */
+    char row[512]; /* list row: ~170 bytes of markup + escaped SSID */
     httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    snprintf(row, sizeof(row),
+             "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">%s"
+             "<title>Zil Paneli Wi-Fi Kurulumu</title>",
+             scanning ? "<meta http-equiv=\"refresh\" content=\"3\">" : "");
+    httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req,
+        "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px;}"
+        "label{display:block;margin-top:14px;font-weight:bold;}"
+        "input{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}"
+        "label.n{font-weight:normal;margin-top:6px;padding:6px 0;border-bottom:1px solid #ddd;}"
+        "label.n input{width:auto;margin:0 8px 0 0;}"
+        "small{color:#666;}.x{color:#b33;}"
+        "button{margin-top:18px;width:100%;padding:10px;font-size:16px;}</style></head>"
+        "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
+        "<form method=\"POST\" action=\"/save\">", HTTPD_RESP_USE_STRLEN);
+    snprintf(row, sizeof(row),
+             "<input type=\"hidden\" name=\"gen\" value=\"%lu\"><label>Bina Wi-Fi ağını seçin:</label>",
+             (unsigned long)gen);
+    httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+
+    if (count == 0) {
+        httpd_resp_send_chunk(req, scanning ? "<p>Ağlar taranıyor, lütfen bekleyin…</p>"
+                                            : "<p>Ağ bulunamadı. Yeniden tarayın veya adı aşağıya yazın.</p>",
+                              HTTPD_RESP_USE_STRLEN);
+    }
+    for (size_t i = 0; i < count; i++) {
+        html_escape(nets[i].ssid, esc, sizeof(esc));
+        const char *bars = nets[i].rssi >= -60 ? "▂▄▆█" : nets[i].rssi >= -70 ? "▂▄▆" : nets[i].rssi >= -80 ? "▂▄" : "▂";
+        /* 802.11b-only station (CONFIG_DOORBELL_WIFI_STA_11B_ONLY): an AP without 11b rates cannot be joined */
+        bool usable = nets[i].supports_11b;
+        snprintf(row, sizeof(row),
+                 "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"%u\"%s%s>%s "
+                 "<small>%s %d dBm%s</small>%s</label>",
+                 (unsigned)i, ((int)i == selected) ? " checked" : "", usable ? "" : " disabled", esc, bars,
+                 (int)nets[i].rssi, nets[i].secured ? " &#128274;" : " (açık)",
+                 usable ? "" : " <small class=\"x\">uyumsuz: erişim noktasında 802.11b kapalı</small>");
+        httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Manual entry for hidden SSIDs; prefilled with the configured name if it is not in the list */
+    bool current_listed = (selected >= 0 && strcmp(nets[selected].ssid, current_ssid) == 0);
+    html_escape(current_listed ? "" : current_ssid, esc, sizeof(esc));
+    snprintf(row, sizeof(row),
+             "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"m\"%s>Diğer / gizli ağ (adı elle yazın):"
+             "</label><input type=\"text\" name=\"ssid\" maxlength=\"32\" value=\"%s\">",
+             selected < 0 ? " checked" : "", esc);
+    httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
+
+    /* Never echo the stored passphrase (I-47) */
+    httpd_resp_send_chunk(req,
+        "<label>Bina Wi-Fi şifresi (WPA2/WPA3):</label>"
+        "<input type=\"password\" name=\"password\" maxlength=\"63\" placeholder=\"Şifreyi girin (açık ağda boş)\">"
+        "<button type=\"submit\">Kaydet ve Bağlan</button></form>"
+        "<p><a href=\"/scan\">Ağları yeniden tara</a></p>"
+        "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
+        "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, 1 sn hızlı yanıp sönme = başarısız.</p>"
+        "</body></html>", HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+/* "Ağları yeniden tara": start a new asynchronous scan (not while a credential test owns the station) */
+static esp_err_t portal_get_scan_handler(httpd_req_t *req)
+{
+    if (!is_request_on_softap_interface(req)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        return ESP_FAIL;
+    }
+    if (!s_portal_testing) {
+        doorbell_net_scan_start_async();
+    }
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", "/");
+    return httpd_resp_send(req, NULL, 0);
 }
 
 static esp_err_t portal_post_save_handler(httpd_req_t *req)
@@ -187,7 +264,8 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char body[256] = {0};
+    /* Worst case: 32-byte SSID and 63-byte passphrase fully percent-encoded (3x) plus field names */
+    char body[512] = {0};
     int total_len = req->content_len;
     if (total_len <= 0 || total_len >= (int)sizeof(body)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Geçersiz istek boyutu");
@@ -217,15 +295,44 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     /* Decode into oversized buffers so over-long input is detected instead of silently truncated */
     char new_ssid[48] = {0};
     char new_pass[80] = {0};
+    char net_sel[8] = {0};
+    char gen_str[12] = {0};
     bool fields_ok = extract_form_field(body, "ssid", new_ssid, sizeof(new_ssid));
     fields_ok = extract_form_field(body, "password", new_pass, sizeof(new_pass)) && fields_ok;
-    memset(body, 0, sizeof(body));
+    fields_ok = extract_form_field(body, "net", net_sel, sizeof(net_sel)) && fields_ok;
+    fields_ok = extract_form_field(body, "gen", gen_str, sizeof(gen_str)) && fields_ok;
+    memset_explicit(body, 0, sizeof(body));
+
+    /* A network picked from the list is identified by its index in the scan generation the page was built from,
+     * so the exact SSID bytes are used (no re-encoding through the browser) and a list refreshed in the meantime
+     * can never select a different network. "m" or no selection = the manually typed SSID. */
+    if (fields_ok && net_sel[0] != '\0' && strcmp(net_sel, "m") != 0) {
+        char *end = NULL;
+        unsigned long idx = strtoul(net_sel, &end, 10);
+        unsigned long page_gen = strtoul(gen_str, NULL, 10);
+        doorbell_net_ap_info_t nets[DOORBELL_NET_SCAN_MAX];
+        uint32_t gen = 0;
+        size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, NULL);
+        if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen || !nets[idx].supports_11b) {
+            memset_explicit(new_pass, 0, sizeof(new_pass));
+            doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+            httpd_resp_set_type(req, "text/html; charset=utf-8");
+            httpd_resp_sendstr(req,
+                "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                "<body><h3>Ağ listesi değişti veya seçilen ağ uyumsuz.</h3>"
+                "<p>Listeden ağı yeniden seçin.</p><p><a href=\"/\">Geri dön</a></p></body></html>");
+            return ESP_OK;
+        }
+        memset(new_ssid, 0, sizeof(new_ssid));
+        memcpy(new_ssid, nets[idx].ssid, sizeof(nets[idx].ssid));
+    }
 
     /* SSID: 1..32 bytes. Passphrase: empty (open AP) or 8..63 characters (IEEE 802.11i WPA2/WPA3 passphrase) */
     size_t ssid_len = strlen(new_ssid);
     size_t pass_len = strlen(new_pass);
     if (!fields_ok || ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
-        memset(new_pass, 0, sizeof(new_pass));
+        memset_explicit(new_pass, 0, sizeof(new_pass));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
         httpd_resp_sendstr(req,
@@ -254,13 +361,13 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     s_portal_testing = false;
     if (s_portal_abort || g_panel_mode != MODE_PORTAL) {
         /* Portal is being stopped: panel_portal_stop() restores the committed credentials (s_sta_cfg_untested) */
-        memset(new_pass, 0, sizeof(new_pass));
+        memset_explicit(new_pass, 0, sizeof(new_pass));
         return ESP_FAIL;
     }
     if (wait_err == ESP_OK) {
         /* Connection succeeded: commit new credentials to NVS and close portal */
         if (!portal_take_mutex_or_abort()) {
-            memset(new_pass, 0, sizeof(new_pass));
+            memset_explicit(new_pass, 0, sizeof(new_pass));
             return ESP_FAIL;
         }
         char prev_ssid[33];
@@ -273,13 +380,13 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         strncpy(g_panel_cfg.wifi_ssid, new_ssid, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, new_pass, sizeof(g_panel_cfg.wifi_pass) - 1);
         esp_err_t save_err = doorbell_storage_panel_save_cfg(&g_panel_cfg);
-        memset(new_pass, 0, sizeof(new_pass));
+        memset_explicit(new_pass, 0, sizeof(new_pass));
 
         if (save_err != ESP_OK) {
             ESP_LOGE(TAG, "NVS save failed for new Wi-Fi credentials (%s) — rolling back", esp_err_to_name(save_err));
             memcpy(g_panel_cfg.wifi_ssid, prev_ssid, sizeof(g_panel_cfg.wifi_ssid));
             memcpy(g_panel_cfg.wifi_pass, prev_pass, sizeof(g_panel_cfg.wifi_pass));
-            memset(prev_pass, 0, sizeof(prev_pass));
+            memset_explicit(prev_pass, 0, sizeof(prev_pass));
             doorbell_net_set_sta_reconnect_paused(true);
             if (g_panel_cfg.wifi_ssid[0] != '\0') {
                 doorbell_net_connect_sta(g_panel_cfg.wifi_ssid, g_panel_cfg.wifi_pass);
@@ -300,7 +407,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
                 "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
         }
 
-        memset(prev_pass, 0, sizeof(prev_pass));
+        memset_explicit(prev_pass, 0, sizeof(prev_pass));
         s_sta_cfg_untested = false;
         xSemaphoreGive(g_panel_mutex);
 
@@ -317,7 +424,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
 
     /* Connection failed: roll back to previous NVS credentials and keep portal open (I-40) */
-    memset(new_pass, 0, sizeof(new_pass));
+    memset_explicit(new_pass, 0, sizeof(new_pass));
     ESP_LOGW(TAG, "Test association to '%s' failed — rolling back to previous Wi-Fi credentials", new_ssid);
 
     doorbell_net_set_sta_reconnect_paused(true);
@@ -342,6 +449,108 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         "<p>Panel girilen Wi-Fi ağına bağlanamadı veya IP adresi alamadı. "
         "Wi-Fi adını ve şifresini kontrol edip tekrar deneyin.</p>"
         "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+}
+
+/* ---- Captive portal: DNS responder + HTTP redirect on the SoftAP only ----
+ * Phones probe a well-known URL right after joining a network (Android: connectivitycheck.gstatic.com/generate_204,
+ * iOS: captive.apple.com/hotspot-detect.html, Windows: msftconnecttest.com/connecttest.txt). The SoftAP's DHCP server
+ * already offers the panel IP as DNS server; answering every A query with that IP and redirecting unknown paths to
+ * the form makes the phone show its "sign in to network" page with the form, instead of routing the setup page to
+ * mobile data. Bound to the SoftAP interface (I-47) and running only while the portal is open. */
+
+#define PORTAL_DNS_PORT        53
+#define PORTAL_DNS_BUF_LEN     512  /* classic DNS-over-UDP maximum */
+#define PORTAL_DNS_RCV_TMO_US  250000
+
+static _Atomic bool s_dns_run = false;
+static SemaphoreHandle_t s_dns_done = NULL;
+
+static void portal_dns_task(void *arg)
+{
+    int sock = (int)(intptr_t)arg;
+    uint8_t buf[PORTAL_DNS_BUF_LEN];
+    while (s_dns_run) {
+        struct sockaddr_storage from;
+        socklen_t from_len = sizeof(from);
+        int n = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr *)&from, &from_len);
+        if (n <= 0) {
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                vTaskDelay(pdMS_TO_TICKS(100)); /* unexpected socket error: do not spin */
+            }
+            continue;
+        }
+        size_t reply_len = doorbell_captive_dns_reply(buf, (size_t)n, sizeof(buf), s_portal_ap_ipv4_host);
+        if (reply_len > 0) {
+            sendto(sock, buf, reply_len, 0, (struct sockaddr *)&from, from_len);
+        }
+    }
+    close(sock);
+    xSemaphoreGive(s_dns_done);
+    vTaskDelete(NULL);
+}
+
+/* Best effort: the portal still works by typing the address if the DNS responder cannot start */
+static void portal_dns_start(void)
+{
+    if (s_dns_done == NULL) {
+        s_dns_done = xSemaphoreCreateBinary();
+        if (s_dns_done == NULL) {
+            ESP_LOGW(TAG, "Captive DNS not started: no memory");
+            return;
+        }
+    }
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        ESP_LOGW(TAG, "Captive DNS not started: socket errno=%d", errno);
+        return;
+    }
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(PORTAL_DNS_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    struct timeval tmo = {.tv_sec = 0, .tv_usec = PORTAL_DNS_RCV_TMO_US};
+    if (doorbell_net_bind_socket_to_softap(sock) != ESP_OK ||
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo)) < 0 ||
+        bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        ESP_LOGW(TAG, "Captive DNS not started: bind failed (errno=%d)", errno);
+        close(sock);
+        return;
+    }
+    xSemaphoreTake(s_dns_done, 0); /* clear a stale completion */
+    s_dns_run = true;
+    if (xTaskCreate(portal_dns_task, "portal_dns", 3072, (void *)(intptr_t)sock, 4, NULL) != pdPASS) {
+        s_dns_run = false;
+        close(sock);
+        ESP_LOGW(TAG, "Captive DNS not started: task creation failed");
+    }
+}
+
+static void portal_dns_stop(void)
+{
+    if (!s_dns_run) {
+        return;
+    }
+    s_dns_run = false;
+    /* The task notices within one receive timeout (250 ms) and closes its socket; bounded well inside the TWDT */
+    if (xSemaphoreTake(s_dns_done, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Captive DNS task did not stop within 1 s");
+    }
+}
+
+/* Unknown paths (the phones' connectivity probes) are redirected to the form. iOS shows its captive-portal sheet only
+ * when the probe response has a body, so a short one is sent. */
+static esp_err_t portal_captive_redirect_handler(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    char location[32];
+    uint32_t ip = s_portal_ap_ipv4_host;
+    snprintf(location, sizeof(location), "http://%u.%u.%u.%u/", (unsigned)((ip >> 24) & 0xFFU),
+             (unsigned)((ip >> 16) & 0xFFU), (unsigned)((ip >> 8) & 0xFFU), (unsigned)(ip & 0xFFU));
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, "Doorbell setup", HTTPD_RESP_USE_STRLEN);
 }
 
 esp_err_t panel_portal_start(void)
@@ -400,8 +609,21 @@ esp_err_t panel_portal_start(void)
         .method = HTTP_POST,
         .handler = portal_post_save_handler,
     };
+    static const httpd_uri_t scan_uri = {
+        .uri = "/scan",
+        .method = HTTP_GET,
+        .handler = portal_get_scan_handler,
+    };
     httpd_register_uri_handler(s_httpd, &root_uri);
     httpd_register_uri_handler(s_httpd, &save_uri);
+    httpd_register_uri_handler(s_httpd, &scan_uri);
+    httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, portal_captive_redirect_handler);
+    /* Every connectivity probe is a 404 before the redirect; keep them out of the log */
+    esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
+    portal_dns_start();
+    /* Network list for the form; usually finished before the installer's phone has joined (I-31: one-shot scan,
+     * returning to the SoftAP channel between scanned channels, never a background scan) */
+    doorbell_net_scan_start_async();
 
     g_panel_mode = MODE_PORTAL;
     s_portal_close_pending = false;
@@ -421,6 +643,7 @@ esp_err_t panel_portal_start(void)
 void panel_portal_stop(void)
 {
     s_portal_abort = true;
+    portal_dns_stop();
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
@@ -432,8 +655,7 @@ void panel_portal_stop(void)
      * holds the submitted (uncommitted) network: switch back to the committed credentials BEFORE unpausing STA
      * reconnect so the driver never initiates a spurious connection attempt to the aborted network. Callers hold
      * g_panel_mutex, so g_panel_cfg is safe to read here. */
-    if (s_sta_cfg_untested) {
-        s_sta_cfg_untested = false;
+    if (atomic_exchange(&s_sta_cfg_untested, false)) {
         /* The credential test un-paused STA reconnect. Pause it so connect_sta() only rewrites the config; the single
          * set_sta_reconnect_paused(false) below then starts exactly one esp_wifi_connect() */
         doorbell_net_set_sta_reconnect_paused(true);

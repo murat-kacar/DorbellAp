@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "doorbell_protocol.h"
@@ -10,7 +9,6 @@ extern "C" {
 #endif
 
 #define DOORBELL_NVS_NAMESPACE "doorbell"
-#define DOORBELL_MAX_CODE_CHARS 11 /* Up to 10 digits + NUL */
 #define DOORBELL_MAX_APT_SLOTS  100 /* 1..99 */
 
 typedef struct {
@@ -72,11 +70,40 @@ esp_err_t doorbell_storage_init(void);
 /* ---- Panel Storage API ---- */
 esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg);
 esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg);
-esp_err_t doorbell_storage_panel_reset_codes_to_factory(doorbell_panel_cfg_blob_t *cfg);
+/** Building Wi-Fi as provisioned by the flasher (Burn / Flash), kept apart from the editable panel_cfg copy */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    char wifi_ssid[33];
+    char wifi_pass[65];
+    uint8_t pad[2];
+    uint32_t crc32;
+} doorbell_panel_factory_wifi_blob_t;
+
+/** Read the factory Wi-Fi record (ESP_ERR_NVS_NOT_FOUND if none was recorded yet). */
+esp_err_t doorbell_storage_panel_load_factory_wifi(doorbell_panel_factory_wifi_blob_t *out);
+
+/**
+ * Record @p cfg's Wi-Fi as the factory Wi-Fi if no record exists yet (first boot after provisioning). Never overwrites
+ * an existing or unreadable record. Call only with a panel_cfg that was read from NVS.
+ */
+esp_err_t doorbell_storage_panel_snapshot_factory_wifi(const doorbell_panel_cfg_blob_t *cfg);
+
+/**
+ * Hidden-button factory reset: admin / user codes to the factory codes, building Wi-Fi to the factory Wi-Fi, lockout
+ * cleared (committed to NVS, then to @p cfg), then every apartment registration in [min_apt, max_apt] erased.
+ * Refuses without changing anything if the factory Wi-Fi record is unavailable or panel_cfg cannot be saved.
+ * @param[out] out_nvs_changed true once panel_cfg was written: the caller must then reload its state from NVS
+ *                             (restart), also when an error is returned because a registration could not be erased.
+ */
+esp_err_t doorbell_storage_panel_factory_reset(doorbell_panel_cfg_blob_t *cfg, uint8_t min_apt, uint8_t max_apt,
+                                               bool *out_nvs_changed);
 
 esp_err_t doorbell_storage_panel_load_apt(uint8_t apt_no, doorbell_panel_apt_blob_t *out_apt);
 esp_err_t doorbell_storage_panel_save_apt(doorbell_panel_apt_blob_t *apt);
 esp_err_t doorbell_storage_panel_erase_apt(uint8_t apt_no);
+/** Erase every registration in [min_apt, max_apt]; continues past failures and returns the first one. */
 esp_err_t doorbell_storage_panel_erase_all_apts(uint8_t min_apt, uint8_t max_apt);
 
 /**

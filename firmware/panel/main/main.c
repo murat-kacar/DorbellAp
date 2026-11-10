@@ -1,14 +1,15 @@
 #include "panel_state.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <errno.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_random.h"
@@ -25,7 +26,7 @@ static const char *TAG = "doorbell_panel";
 SemaphoreHandle_t g_panel_mutex = NULL;
 doorbell_panel_cfg_blob_t g_panel_cfg = {0};
 panel_apt_slot_t g_apt_slots[DOORBELL_MAX_APT_SLOTS] = {0};
-volatile panel_mode_t g_panel_mode = MODE_IDLE;
+_Atomic panel_mode_t g_panel_mode = MODE_IDLE;
 uint32_t g_panel_boot_id = 0;
 doorbell_relay_t g_door_relay = {0};
 
@@ -41,12 +42,15 @@ RTC_NOINIT_ATTR static rtc_silence_state_t s_rtc_silence;
 static int64_t s_last_any_module_rx_us = 0;
 
 /* Pending asynchronous actions dispatched from keypad/button callbacks to panel_worker_task */
-static volatile uint8_t s_pending_ring_apt = 0;
-static volatile uint8_t s_pending_pair_apt = 0;
-static volatile bool s_pending_start_portal = false;
-static volatile bool s_pending_cancel_mode = false;
-static volatile bool s_pending_building_reset = false;
-static volatile bool s_pending_code_reset = false;
+/* Requests from the keypad, portal, console and button tasks, executed by panel_worker_task. atomic_exchange() takes a
+ * request in one step; rings are queued so a second ring entered before the first ran is not lost. */
+#define RING_QUEUE_LEN 4
+static QueueHandle_t s_ring_queue = NULL;
+static atomic_uint_least8_t s_pending_pair_apt = 0;
+static atomic_bool s_pending_start_portal = false;
+static atomic_bool s_pending_cancel_mode = false;
+static atomic_bool s_pending_building_reset = false;
+static atomic_bool s_pending_factory_reset = false;
 
 static uint16_t s_panel_next_seq_id = 1;
 /* panel_cfg could not be loaded at boot: keypad codes are disabled until re-provisioned (fail closed, I-5) */
@@ -177,7 +181,11 @@ void panel_action_ring_apartment(uint8_t apt_no)
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         return;
     }
-    s_pending_ring_apt = apt_no;
+    if (xQueueSend(s_ring_queue, &apt_no, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Ring request for apartment %u dropped: %d rings already queued", (unsigned)apt_no,
+                 RING_QUEUE_LEN);
+        doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+    }
 }
 
 static void execute_start_pairing_locked(uint8_t apt_no)
@@ -246,17 +254,17 @@ static void execute_start_pairing_locked(uint8_t apt_no)
 
 void panel_action_start_pairing(uint8_t apt_no)
 {
-    s_pending_pair_apt = apt_no;
+    atomic_store(&s_pending_pair_apt, apt_no);
 }
 
 void panel_action_start_portal(void)
 {
-    s_pending_start_portal = true;
+    atomic_store(&s_pending_start_portal, true);
 }
 
 void panel_action_cancel_active_mode(void)
 {
-    s_pending_cancel_mode = true;
+    atomic_store(&s_pending_cancel_mode, true);
 }
 
 void panel_action_delete_apartment(uint8_t apt_no)
@@ -280,62 +288,79 @@ void panel_action_delete_apartment(uint8_t apt_no)
 void panel_action_building_reset(void)
 {
     g_panel_mode = MODE_RESETTING;
-    s_pending_building_reset = true;
+    atomic_store(&s_pending_building_reset, true);
 }
 
-void panel_action_reset_codes_to_factory(void)
+void panel_action_factory_reset(void)
 {
-    s_pending_code_reset = true;
+    atomic_store(&s_pending_factory_reset, true);
+}
+
+/* After a reset changed NVS: show the outcome for 2 s, then restart so RAM is rebuilt from what NVS actually holds */
+[[noreturn]] static void show_result_and_restart(bool ok)
+{
+    doorbell_led_panel_start(ok ? LED_PANEL_RESULT_OK : LED_PANEL_RESULT_ERR);
+    for (int i = 0; i < 20; i++) {
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    esp_restart();
 }
 
 static void execute_pending_panel_actions(void)
 {
-    if (s_pending_building_reset) {
-        s_pending_building_reset = false;
+    if (atomic_exchange(&s_pending_building_reset, false)) {
         ESP_LOGW(TAG, "Executing full building reset (*<admin>*6*<admin>#)");
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         abort_pairing_session_locked(false);
         panel_portal_stop();
         /* Building reset erases apartment registrations and keys only; user/admin codes and building Wi-Fi
          * credentials are preserved (kullanim-kilavuzu.md §6.3) */
-        doorbell_storage_panel_erase_all_apts(CONFIG_DOORBELL_PANEL_MIN_APT_NO,
-                                              CONFIG_DOORBELL_PANEL_MAX_APT_NO);
+        esp_err_t err = doorbell_storage_panel_erase_all_apts(CONFIG_DOORBELL_PANEL_MIN_APT_NO,
+                                                              CONFIG_DOORBELL_PANEL_MAX_APT_NO);
         memset(g_apt_slots, 0, sizeof(g_apt_slots));
         xSemaphoreGive(g_panel_mutex);
-        doorbell_led_panel_start(LED_PANEL_RESULT_OK);
-        for (int i = 0; i < 20; i++) {
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(100));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Building reset incomplete (%s); restarting to reload the stored registrations",
+                     esp_err_to_name(err));
         }
-        esp_restart();
+        show_result_and_restart(err == ESP_OK);
     }
 
-    if (s_pending_code_reset) {
-        s_pending_code_reset = false;
+    if (atomic_exchange(&s_pending_factory_reset, false)) {
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         if (g_panel_mode == MODE_PAIR_DISCOVER) {
             abort_pairing_session_locked(false);
         } else if (g_panel_mode == MODE_PORTAL) {
             panel_portal_stop();
         }
-        esp_err_t err = doorbell_storage_panel_reset_codes_to_factory(&g_panel_cfg);
-        /* On success the storage call zeroed the persisted lockout counters; also drop the running in-RAM lockout,
-         * otherwise the restored factory codes stay rejected and the 1 s tick writes the remaining time back to NVS */
-        if (err == ESP_OK) {
+        /* Back to the provisioned state (Burn / Flash): factory codes, factory building Wi-Fi, no lockout, no
+         * apartment registrations. Storage commits panel_cfg first and erases registrations only after that */
+        bool nvs_changed = false;
+        esp_err_t err = doorbell_storage_panel_factory_reset(&g_panel_cfg, CONFIG_DOORBELL_PANEL_MIN_APT_NO,
+                                                            CONFIG_DOORBELL_PANEL_MAX_APT_NO, &nvs_changed);
+        if (nvs_changed) {
             panel_lockout_clear_locked();
+            memset(g_apt_slots, 0, sizeof(g_apt_slots)); /* never serve a half-erased set until the restart */
         }
         xSemaphoreGive(g_panel_mutex);
 
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Restored admin and user codes to factory defaults via hidden reset button");
-            doorbell_led_panel_start(LED_PANEL_RESULT_OK);
+            ESP_LOGW(TAG, "Factory reset via hidden button: codes, building Wi-Fi and registrations restored to the "
+                          "provisioned state; restarting");
+        } else {
+            ESP_LOGE(TAG, "Factory reset failed (%s)%s", esp_err_to_name(err),
+                     nvs_changed ? "; restarting to reload the stored state (press the button again to retry)"
+                                 : "; nothing changed");
+        }
+        if (nvs_changed) {
+            show_result_and_restart(err == ESP_OK); /* the station reconnects with the factory Wi-Fi */
         } else {
             doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         }
     }
 
-    if (s_pending_cancel_mode) {
-        s_pending_cancel_mode = false;
+    if (atomic_exchange(&s_pending_cancel_mode, false)) {
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         if (g_panel_mode == MODE_PAIR_DISCOVER) {
             ESP_LOGI(TAG, "Pairing discovery cancelled by user");
@@ -346,19 +371,18 @@ static void execute_pending_panel_actions(void)
         xSemaphoreGive(g_panel_mutex);
     }
 
-    if (s_pending_start_portal) {
-        s_pending_start_portal = false;
+    if (atomic_exchange(&s_pending_start_portal, false)) {
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         esp_err_t err = panel_portal_start();
         xSemaphoreGive(g_panel_mutex);
         if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Setup portal could not start: %s", esp_err_to_name(err));
             doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         }
     }
 
-    uint8_t pair_apt = s_pending_pair_apt;
+    uint8_t pair_apt = atomic_exchange(&s_pending_pair_apt, 0);
     if (pair_apt != 0) {
-        s_pending_pair_apt = 0;
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         execute_start_pairing_locked(pair_apt);
         xSemaphoreGive(g_panel_mutex);
@@ -514,7 +538,7 @@ static void step_pairing_discovery(void)
                                                           ch_pkt,
                                                           sizeof(ch_pkt),
                                                           &ch_len);
-        memset(&blob, 0, sizeof(blob));
+        memset_explicit(&blob, 0, sizeof(blob));
 
         if (pack_err == ESP_OK) {
             memcpy(s_pair_sess.challenge_pkt, ch_pkt, ch_len);
@@ -535,134 +559,249 @@ static void step_pairing_discovery(void)
 
 /* ---- Operational LAN UDP Frame Handler ---- */
 
-static void handle_lan_packet(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host)
+/* ---- Module frames: dispatch under g_panel_mutex, side effects (relay, logging) after releasing it ---- */
+
+/* Work of a handled frame that must run after g_panel_mutex is released */
+typedef struct {
+    bool open_door;
+    bool heartbeat_valid;
+    doorbell_pl_heartbeat_req_t heartbeat;
+} lan_followup_t;
+
+/* Accepted authenticated message: advance the replay floor, learn a changed module IP and persist both in
+ * write-ahead blocks (I-50). Caller holds g_panel_mutex. */
+static void slot_accept_rx_locked(panel_apt_slot_t *slot, uint32_t rx_counter, uint32_t sender_ipv4,
+                                  uint32_t from_ip_host)
 {
-    if (len < DOORBELL_MIN_FRAME_SIZE) {
-        return;
+    slot->nvs.rx_floor = rx_counter;
+    bool ip_changed = false;
+    if (sender_ipv4 == from_ip_host && from_ip_host != 0 && slot->nvs.last_ipv4 != from_ip_host) {
+        slot->nvs.last_ipv4 = from_ip_host;
+        ip_changed = true;
     }
-
-    doorbell_hdr_t clear_hdr;
-    if (doorbell_hdr_parse(buf, len, &clear_hdr) != ESP_OK) {
-        return;
-    }
-
-    /* Step 2: Pre-crypto destination & direction filter (I-53) */
-    if (clear_hdr.dst_id != DOORBELL_ID_PANEL ||
-        (clear_hdr.flags & DOORBELL_FLAG_DIR_UNIT_TO_PANEL) == 0 ||
-        clear_hdr.src_id < CONFIG_DOORBELL_PANEL_MIN_APT_NO ||
-        clear_hdr.src_id > CONFIG_DOORBELL_PANEL_MAX_APT_NO) {
-        return;
-    }
-
-    uint8_t apt_no = clear_hdr.src_id;
-
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
-
-    /* Special case: PAIR_COMPLETE arriving during MODE_PAIR_COMPLETE (or idempotent retry right after) */
-    if (clear_hdr.msg_type == DOORBELL_MSG_PAIR_COMPLETE) {
-        if (g_panel_mode == MODE_PAIR_COMPLETE && s_pair_sess.apt_no == apt_no) {
-            doorbell_hdr_t auth_hdr;
-            uint8_t plain[64];
-            size_t plain_len = 0;
-            if (doorbell_frame_decrypt(buf, len, s_pair_sess.k_apt,
-                                       &auth_hdr, plain, sizeof(plain), &plain_len) == ESP_OK) {
-                doorbell_pl_pair_complete_t pc;
-                if (doorbell_unpack_pair_complete(plain, plain_len, &pc) == ESP_OK &&
-                    memcmp(pc.unit_mac, s_pair_sess.hello.unit_mac, 6) == 0) {
-                    /* Atomic NVS Commit of new apartment record (I-30, I-50). Build the record in a scratch copy and
-                     * publish it to g_apt_slots only after nvs_commit() succeeds, so a failed write never leaves a
-                     * RAM-only registration behind. */
-                    doorbell_panel_apt_blob_t new_rec = {0};
-                    new_rec.apt_no = apt_no;
-                    new_rec.registered = 1;
-                    memcpy(new_rec.unit_mac, pc.unit_mac, 6);
-                    memcpy(new_rec.k_apt, s_pair_sess.k_apt, DOORBELL_KEY_SIZE);
-                    new_rec.last_ipv4 = (pc.sender_ipv4 == from_ip_host) ? from_ip_host : 0;
-                    new_rec.tx_counter_ceiling = CONFIG_DOORBELL_NVS_COUNTER_BLOCK;
-                    new_rec.rx_floor = auth_hdr.tx_counter;
-
-                    esp_err_t commit_err = doorbell_storage_panel_save_apt(&new_rec);
-                    if (commit_err != ESP_OK) {
-                        memset(&new_rec, 0, sizeof(new_rec));
-                        ESP_LOGE(TAG, "NVS commit of apartment %u failed (%s) — pairing rolled back",
-                                 (unsigned)apt_no, esp_err_to_name(commit_err));
-                        abort_pairing_session_locked(true);
-                    } else {
-                        panel_apt_slot_t *slot = &g_apt_slots[apt_no];
-                        memset(slot, 0, sizeof(*slot));
-                        slot->nvs = new_rec;
-                        memset(&new_rec, 0, sizeof(new_rec));
-                        slot->persisted_rx_floor = auth_hdr.tx_counter;
-                        slot->runtime_tx_counter = 0;
-                        slot->last_heartbeat_us = esp_timer_get_time();
-                        /* Erase any older apartment slot sharing the same unit_mac ONLY after new commit succeeds (I-30, I-45) */
-                        for (uint8_t old_apt = CONFIG_DOORBELL_PANEL_MIN_APT_NO;
-                             old_apt <= CONFIG_DOORBELL_PANEL_MAX_APT_NO;
-                             old_apt++) {
-                            if (old_apt != apt_no &&
-                                g_apt_slots[old_apt].nvs.registered &&
-                                memcmp(g_apt_slots[old_apt].nvs.unit_mac, pc.unit_mac, 6) == 0) {
-                                doorbell_storage_panel_erase_apt(old_apt);
-                                memset(&g_apt_slots[old_apt], 0, sizeof(g_apt_slots[old_apt]));
-                                ESP_LOGI(TAG, "Removed previous registration of same unit_mac from apartment %u",
-                                         (unsigned)old_apt);
-                            }
-                        }
-
-                        uint32_t panel_ip = 0;
-                        doorbell_net_get_sta_ipv4(&panel_ip);
-                        uint32_t ack_cnt = 0;
-                        if (doorbell_storage_panel_next_tx_counter(&slot->nvs,
-                                                                   &slot->runtime_tx_counter,
-                                                                   CONFIG_DOORBELL_NVS_COUNTER_BLOCK,
-                                                                   &ack_cnt) == ESP_OK) {
-                            doorbell_pl_pair_complete_ack_t ack_pl = {
-                                .req_tx_counter = auth_hdr.tx_counter,
-                                .req_seq_id = auth_hdr.seq_id,
-                                .status = DOORBELL_STATUS_OK,
-                                .sender_ipv4 = panel_ip,
-                                .panel_boot_id = g_panel_boot_id,
-                            };
-                            uint8_t ack_plain[15];
-                            size_t ack_plain_len = doorbell_pack_heartbeat_ack(&ack_pl, ack_plain);
-                            doorbell_hdr_t ack_hdr = {
-                                .magic = DOORBELL_PROTO_MAGIC,
-                                .version = DOORBELL_PROTO_VERSION,
-                                .msg_type = DOORBELL_MSG_PAIR_COMPLETE_ACK,
-                                .flags = 0,
-                                .src_id = DOORBELL_ID_PANEL,
-                                .dst_id = apt_no,
-                                .seq_id = auth_hdr.seq_id,
-                                .tx_counter = ack_cnt,
-                            };
-                            if (doorbell_frame_encrypt(&ack_hdr, slot->nvs.k_apt, ack_plain, ack_plain_len,
-                                                       slot->last_ack.frame, sizeof(slot->last_ack.frame),
-                                                       &slot->last_ack.frame_len) == ESP_OK) {
-                                slot->last_ack.valid = true;
-                                slot->last_ack.src_id = apt_no;
-                                slot->last_ack.tx_counter = auth_hdr.tx_counter;
-                                slot->last_ack.seq_id = auth_hdr.seq_id;
-                                memcpy(slot->last_ack.req_tag, buf + len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
-                                doorbell_udp_send_direct(lan_sock,
-                                                         slot->last_ack.frame,
-                                                         slot->last_ack.frame_len,
-                                                         from_ip_host,
-                                                         CONFIG_DOORBELL_UDP_PORT);
-                            }
-                        }
-
-                        s_last_any_module_rx_us = esp_timer_get_time();
-                        rtc_silence_set_level(0);
-                        abort_pairing_session_locked(false);
-                        doorbell_led_panel_start(LED_PANEL_RESULT_OK);
-                        ESP_LOGI(TAG, "Completed two-phase pairing for apartment %u (fw v%u.%u)",
-                                 (unsigned)apt_no, (unsigned)pc.fw_version_major, (unsigned)pc.fw_version_minor);
-                    }
-                }
-            }
-            xSemaphoreGive(g_panel_mutex);
-            return;
+    if (ip_changed || (slot->nvs.rx_floor - slot->persisted_rx_floor) >= CONFIG_DOORBELL_NVS_COUNTER_BLOCK) {
+        if (doorbell_storage_panel_save_apt(&slot->nvs) == ESP_OK) {
+            slot->persisted_rx_floor = slot->nvs.rx_floor;
         }
+    }
+}
+
+/* Encrypt the ACK for @p req_hdr into the slot's deduplication cache (I-29) and send it. The cache keeps the request's
+ * CCM tag so only a byte-identical retry is answered from it. Caller holds g_panel_mutex. */
+static void send_ack_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t apt_no, uint8_t ack_msg_type,
+                            const doorbell_hdr_t *req_hdr, const uint8_t *req_frame, size_t req_len,
+                            uint32_t ack_counter, const uint8_t *ack_plain, size_t ack_plain_len,
+                            uint32_t to_ip_host)
+{
+    doorbell_hdr_t ack_hdr = {
+        .magic = DOORBELL_PROTO_MAGIC,
+        .version = DOORBELL_PROTO_VERSION,
+        .msg_type = ack_msg_type,
+        .flags = 0,
+        .src_id = DOORBELL_ID_PANEL,
+        .dst_id = apt_no,
+        .seq_id = req_hdr->seq_id,
+        .tx_counter = ack_counter,
+    };
+    if (doorbell_frame_encrypt(&ack_hdr, slot->nvs.k_apt, ack_plain, ack_plain_len,
+                               slot->last_ack.frame, sizeof(slot->last_ack.frame),
+                               &slot->last_ack.frame_len) != ESP_OK) {
+        return;
+    }
+    slot->last_ack.valid = true;
+    slot->last_ack.src_id = apt_no;
+    slot->last_ack.tx_counter = req_hdr->tx_counter;
+    slot->last_ack.seq_id = req_hdr->seq_id;
+    memcpy(slot->last_ack.req_tag, req_frame + req_len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
+    doorbell_udp_send_direct(lan_sock, slot->last_ack.frame, slot->last_ack.frame_len, to_ip_host,
+                             CONFIG_DOORBELL_UDP_PORT);
+}
+
+/* PAIR_COMPLETE from the module being paired: two-phase commit of the new registration (I-30, I-45, I-50).
+ * Caller holds g_panel_mutex. */
+static void handle_pair_complete_locked(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host,
+                                        uint8_t apt_no)
+{
+    doorbell_hdr_t auth_hdr;
+    uint8_t plain[64];
+    size_t plain_len = 0;
+    if (doorbell_frame_decrypt(buf, len, s_pair_sess.k_apt, &auth_hdr, plain, sizeof(plain), &plain_len) != ESP_OK) {
+        return;
+    }
+    doorbell_pl_pair_complete_t pc;
+    if (doorbell_unpack_pair_complete(plain, plain_len, &pc) != ESP_OK ||
+        memcmp(pc.unit_mac, s_pair_sess.hello.unit_mac, 6) != 0) {
+        return;
+    }
+
+    /* Build the record in a scratch copy and publish it to g_apt_slots only after nvs_commit() succeeds, so a failed
+     * write never leaves a RAM-only registration behind */
+    doorbell_panel_apt_blob_t new_rec = {0};
+    new_rec.apt_no = apt_no;
+    new_rec.registered = 1;
+    memcpy(new_rec.unit_mac, pc.unit_mac, 6);
+    memcpy(new_rec.k_apt, s_pair_sess.k_apt, DOORBELL_KEY_SIZE);
+    new_rec.last_ipv4 = (pc.sender_ipv4 == from_ip_host) ? from_ip_host : 0;
+    new_rec.tx_counter_ceiling = CONFIG_DOORBELL_NVS_COUNTER_BLOCK;
+    new_rec.rx_floor = auth_hdr.tx_counter;
+
+    esp_err_t commit_err = doorbell_storage_panel_save_apt(&new_rec);
+    if (commit_err != ESP_OK) {
+        memset_explicit(&new_rec, 0, sizeof(new_rec));
+        ESP_LOGE(TAG, "NVS commit of apartment %u failed (%s) — pairing rolled back",
+                 (unsigned)apt_no, esp_err_to_name(commit_err));
+        abort_pairing_session_locked(true);
+        return;
+    }
+
+    panel_apt_slot_t *slot = &g_apt_slots[apt_no];
+    memset(slot, 0, sizeof(*slot));
+    slot->nvs = new_rec;
+    memset_explicit(&new_rec, 0, sizeof(new_rec));
+    slot->persisted_rx_floor = auth_hdr.tx_counter;
+    slot->runtime_tx_counter = 0;
+    slot->last_heartbeat_us = esp_timer_get_time();
+
+    /* Erase any older apartment slot sharing the same unit_mac ONLY after the new commit succeeded (I-30, I-45) */
+    for (uint8_t old_apt = CONFIG_DOORBELL_PANEL_MIN_APT_NO; old_apt <= CONFIG_DOORBELL_PANEL_MAX_APT_NO; old_apt++) {
+        if (old_apt != apt_no && g_apt_slots[old_apt].nvs.registered &&
+            memcmp(g_apt_slots[old_apt].nvs.unit_mac, pc.unit_mac, 6) == 0) {
+            doorbell_storage_panel_erase_apt(old_apt);
+            memset(&g_apt_slots[old_apt], 0, sizeof(g_apt_slots[old_apt]));
+            ESP_LOGI(TAG, "Removed previous registration of same unit_mac from apartment %u", (unsigned)old_apt);
+        }
+    }
+
+    uint32_t panel_ip = 0;
+    doorbell_net_get_sta_ipv4(&panel_ip);
+    uint32_t ack_cnt = 0;
+    if (doorbell_storage_panel_next_tx_counter(&slot->nvs, &slot->runtime_tx_counter,
+                                               CONFIG_DOORBELL_NVS_COUNTER_BLOCK, &ack_cnt) == ESP_OK) {
+        doorbell_pl_pair_complete_ack_t ack_pl = {
+            .req_tx_counter = auth_hdr.tx_counter,
+            .req_seq_id = auth_hdr.seq_id,
+            .status = DOORBELL_STATUS_OK,
+            .sender_ipv4 = panel_ip,
+            .panel_boot_id = g_panel_boot_id,
+        };
+        uint8_t ack_plain[15];
+        size_t ack_plain_len = doorbell_pack_heartbeat_ack(&ack_pl, ack_plain); /* same payload layout */
+        send_ack_locked(lan_sock, slot, apt_no, DOORBELL_MSG_PAIR_COMPLETE_ACK, &auth_hdr, buf, len, ack_cnt,
+                        ack_plain, ack_plain_len, from_ip_host);
+    }
+
+    s_last_any_module_rx_us = esp_timer_get_time();
+    rtc_silence_set_level(0);
+    abort_pairing_session_locked(false);
+    doorbell_led_panel_start(LED_PANEL_RESULT_OK);
+    ESP_LOGI(TAG, "Completed two-phase pairing for apartment %u (fw v%u.%u)",
+             (unsigned)apt_no, (unsigned)pc.fw_version_major, (unsigned)pc.fw_version_minor);
+}
+
+/* OPEN_DOOR_REQ with reboot-replay / withheld-packet freshness check (I-7, I-18): an unverified request gets a
+ * STATUS_CHALLENGE ACK, a request echoing the live challenge opens the door. Caller holds g_panel_mutex.
+ * @return true if the door relay must be energized (by the caller, after releasing the mutex) */
+static bool handle_open_door_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t apt_no,
+                                    const doorbell_hdr_t *auth_hdr, const uint8_t *plain, size_t plain_len,
+                                    const uint8_t *buf, size_t len, uint32_t from_ip_host, uint32_t panel_ip,
+                                    int64_t now_us)
+{
+    doorbell_pl_open_door_req_t req;
+    if (doorbell_unpack_open_door_req(plain, plain_len, &req) != ESP_OK) {
+        return false;
+    }
+    slot_accept_rx_locked(slot, auth_hdr->tx_counter, req.sender_ipv4, from_ip_host);
+    slot->last_heartbeat_us = now_us;
+    slot->no_report_warned = false;
+
+    bool challenge_verified = (req.panel_boot_id == g_panel_boot_id) &&
+                              (req.echo_nonce != 0) &&
+                              (req.echo_nonce == slot->active_challenge_nonce) &&
+                              (now_us <= slot->challenge_deadline_us);
+
+    uint32_t ack_cnt = 0;
+    if (doorbell_storage_panel_next_tx_counter(&slot->nvs, &slot->runtime_tx_counter,
+                                               CONFIG_DOORBELL_NVS_COUNTER_BLOCK, &ack_cnt) != ESP_OK) {
+        return false;
+    }
+
+    doorbell_pl_open_door_ack_t ack_pl = {
+        .req_tx_counter = auth_hdr->tx_counter,
+        .req_seq_id = auth_hdr->seq_id,
+        .sender_ipv4 = panel_ip,
+        .panel_boot_id = g_panel_boot_id,
+        .challenge_nonce = 0,
+    };
+    bool open_door = false;
+    if (!challenge_verified) {
+        /* 64-bit challenge valid for 2000 ms; the door stays locked until it is echoed */
+        uint64_t chal = 0;
+        doorbell_crypto_random((uint8_t *)&chal, sizeof(chal));
+        if (chal == 0) {
+            chal = 1;
+        }
+        slot->active_challenge_nonce = chal;
+        slot->challenge_deadline_us = now_us + 2000000LL;
+        ack_pl.status = DOORBELL_STATUS_CHALLENGE;
+        ack_pl.challenge_nonce = chal;
+    } else {
+        /* Challenge consumed; the ACK goes out before the relay is energized */
+        slot->active_challenge_nonce = 0;
+        slot->challenge_deadline_us = 0;
+        ack_pl.status = g_door_relay.is_active ? DOORBELL_STATUS_ALREADY_ACTIVE : DOORBELL_STATUS_OK;
+        open_door = true;
+    }
+    uint8_t ack_plain[23];
+    size_t ack_plain_len = doorbell_pack_open_door_ack(&ack_pl, ack_plain);
+    send_ack_locked(lan_sock, slot, apt_no, DOORBELL_MSG_OPEN_DOOR_ACK, auth_hdr, buf, len, ack_cnt,
+                    ack_plain, ack_plain_len, from_ip_host);
+    return open_door;
+}
+
+/* HEARTBEAT_REQ: liveness, replay floor, telemetry (I-52). Caller holds g_panel_mutex.
+ * @return true if @p out_hb holds a valid report to log */
+static bool handle_heartbeat_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t apt_no,
+                                    const doorbell_hdr_t *auth_hdr, const uint8_t *plain, size_t plain_len,
+                                    const uint8_t *buf, size_t len, uint32_t from_ip_host, uint32_t panel_ip,
+                                    int64_t now_us, doorbell_pl_heartbeat_req_t *out_hb)
+{
+    if (doorbell_unpack_heartbeat_req(plain, plain_len, out_hb) != ESP_OK) {
+        return false;
+    }
+    slot_accept_rx_locked(slot, auth_hdr->tx_counter, out_hb->sender_ipv4, from_ip_host);
+    slot->last_heartbeat_us = now_us;
+    slot->no_report_warned = false;
+
+    uint32_t ack_cnt = 0;
+    if (doorbell_storage_panel_next_tx_counter(&slot->nvs, &slot->runtime_tx_counter,
+                                               CONFIG_DOORBELL_NVS_COUNTER_BLOCK, &ack_cnt) == ESP_OK) {
+        doorbell_pl_heartbeat_ack_t ack_pl = {
+            .req_tx_counter = auth_hdr->tx_counter,
+            .req_seq_id = auth_hdr->seq_id,
+            .status = DOORBELL_STATUS_OK,
+            .sender_ipv4 = panel_ip,
+            .panel_boot_id = g_panel_boot_id,
+        };
+        uint8_t ack_plain[15];
+        size_t ack_plain_len = doorbell_pack_heartbeat_ack(&ack_pl, ack_plain);
+        send_ack_locked(lan_sock, slot, apt_no, DOORBELL_MSG_HEARTBEAT_ACK, auth_hdr, buf, len, ack_cnt,
+                        ack_plain, ack_plain_len, from_ip_host);
+    }
+    return true;
+}
+
+/* One module frame after the pre-crypto filter: pairing commit, deduplication (I-29), replay check, AEAD, then the
+ * message handler. Caller holds g_panel_mutex; post-unlock work is returned in @p follow. */
+static void handle_frame_locked(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host,
+                                const doorbell_hdr_t *clear_hdr, lan_followup_t *follow)
+{
+    uint8_t apt_no = clear_hdr->src_id;
+
+    /* PAIR_COMPLETE of the running pairing session (MODE_PAIR_COMPLETE) */
+    if (clear_hdr->msg_type == DOORBELL_MSG_PAIR_COMPLETE && g_panel_mode == MODE_PAIR_COMPLETE &&
+        s_pair_sess.apt_no == apt_no) {
+        handle_pair_complete_locked(lan_sock, buf, len, from_ip_host, apt_no);
+        return;
     }
 
     panel_apt_slot_t *slot = &g_apt_slots[apt_no];
@@ -672,263 +811,94 @@ static void handle_lan_packet(int lan_sock, const uint8_t *buf, size_t len, uint
             ESP_LOGW(TAG, "Dropped packet from unregistered apartment %u (total=%lu)",
                      (unsigned)apt_no, (unsigned long)s_unregistered_packets);
         }
-        xSemaphoreGive(g_panel_mutex);
         return;
     }
 
-    /* Step 3: Deduplication check (I-29) — re-send cached ACK on duplicate request */
+    /* Duplicate request: re-send the cached ACK (I-29) */
     if (slot->last_ack.valid &&
-        slot->last_ack.tx_counter == clear_hdr.tx_counter &&
-        slot->last_ack.seq_id == clear_hdr.seq_id &&
+        slot->last_ack.tx_counter == clear_hdr->tx_counter &&
+        slot->last_ack.seq_id == clear_hdr->seq_id &&
         mbedtls_ct_memcmp(slot->last_ack.req_tag, buf + len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE) == 0) {
-        doorbell_udp_send_direct(lan_sock,
-                                 slot->last_ack.frame,
-                                 slot->last_ack.frame_len,
-                                 from_ip_host,
+        doorbell_udp_send_direct(lan_sock, slot->last_ack.frame, slot->last_ack.frame_len, from_ip_host,
                                  CONFIG_DOORBELL_UDP_PORT);
-        xSemaphoreGive(g_panel_mutex);
         return;
     }
 
-    /* Step 4: Replay check */
-    if (clear_hdr.tx_counter <= slot->nvs.rx_floor) {
+    /* Replay check, then AEAD authentication */
+    if (clear_hdr->tx_counter <= slot->nvs.rx_floor) {
         s_rejected_messages++;
-        xSemaphoreGive(g_panel_mutex);
         return;
     }
-
-    /* Step 5: AEAD decryption and authentication */
     doorbell_hdr_t auth_hdr;
     uint8_t plain[128];
     size_t plain_len = 0;
-    if (doorbell_frame_decrypt(buf, len, slot->nvs.k_apt,
-                               &auth_hdr, plain, sizeof(plain), &plain_len) != ESP_OK) {
+    if (doorbell_frame_decrypt(buf, len, slot->nvs.k_apt, &auth_hdr, plain, sizeof(plain), &plain_len) != ESP_OK) {
         s_rejected_messages++;
-        xSemaphoreGive(g_panel_mutex);
         return;
     }
 
     int64_t now_us = esp_timer_get_time();
     s_last_any_module_rx_us = now_us;
     rtc_silence_set_level(0);
-
     uint32_t panel_ip = 0;
     doorbell_net_get_sta_ipv4(&panel_ip);
 
     if (auth_hdr.msg_type == DOORBELL_MSG_OPEN_DOOR_REQ) {
-        doorbell_pl_open_door_req_t req;
-        if (doorbell_unpack_open_door_req(plain, plain_len, &req) != ESP_OK) {
-            xSemaphoreGive(g_panel_mutex);
-            return;
-        }
+        follow->open_door = handle_open_door_locked(lan_sock, slot, apt_no, &auth_hdr, plain, plain_len, buf, len,
+                                                    from_ip_host, panel_ip, now_us);
+    } else if (auth_hdr.msg_type == DOORBELL_MSG_HEARTBEAT_REQ) {
+        follow->heartbeat_valid = handle_heartbeat_locked(lan_sock, slot, apt_no, &auth_hdr, plain, plain_len, buf,
+                                                          len, from_ip_host, panel_ip, now_us, &follow->heartbeat);
+    }
+}
 
-        slot->nvs.rx_floor = auth_hdr.tx_counter;
-        bool ip_changed = false;
-        if (req.sender_ipv4 == from_ip_host && from_ip_host != 0 && slot->nvs.last_ipv4 != from_ip_host) {
-            slot->nvs.last_ipv4 = from_ip_host;
-            ip_changed = true;
-        }
-        if (ip_changed || (slot->nvs.rx_floor - slot->persisted_rx_floor) >= CONFIG_DOORBELL_NVS_COUNTER_BLOCK) {
-            if (doorbell_storage_panel_save_apt(&slot->nvs) == ESP_OK) {
-                slot->persisted_rx_floor = slot->nvs.rx_floor;
-            }
-        }
-        slot->last_heartbeat_us = now_us;
-        slot->no_report_warned = false;
-
-        /* Reboot replay & withheld-packet freshness verification (I-7, I-18) */
-        bool challenge_verified = (req.panel_boot_id == g_panel_boot_id) &&
-                                  (req.echo_nonce != 0) &&
-                                  (req.echo_nonce == slot->active_challenge_nonce) &&
-                                  (now_us <= slot->challenge_deadline_us);
-
-        uint32_t ack_cnt = 0;
-        if (doorbell_storage_panel_next_tx_counter(&slot->nvs,
-                                                   &slot->runtime_tx_counter,
-                                                   CONFIG_DOORBELL_NVS_COUNTER_BLOCK,
-                                                   &ack_cnt) != ESP_OK) {
-            xSemaphoreGive(g_panel_mutex);
-            return;
-        }
-
-        if (!challenge_verified) {
-            /* Issue 64-bit challenge_nonce valid for 2000 ms without unlocking door yet (I-7, I-18) */
-            uint64_t chal = 0;
-            doorbell_crypto_random((uint8_t *)&chal, sizeof(chal));
-            if (chal == 0) {
-                chal = 1;
-            }
-            slot->active_challenge_nonce = chal;
-            slot->challenge_deadline_us = now_us + 2000000LL;
-
-            doorbell_pl_open_door_ack_t ack_pl = {
-                .req_tx_counter = auth_hdr.tx_counter,
-                .req_seq_id = auth_hdr.seq_id,
-                .status = DOORBELL_STATUS_CHALLENGE,
-                .sender_ipv4 = panel_ip,
-                .panel_boot_id = g_panel_boot_id,
-                .challenge_nonce = chal,
-            };
-            uint8_t ack_plain[23];
-            size_t ack_plain_len = doorbell_pack_open_door_ack(&ack_pl, ack_plain);
-            doorbell_hdr_t ack_hdr = {
-                .magic = DOORBELL_PROTO_MAGIC,
-                .version = DOORBELL_PROTO_VERSION,
-                .msg_type = DOORBELL_MSG_OPEN_DOOR_ACK,
-                .flags = 0,
-                .src_id = DOORBELL_ID_PANEL,
-                .dst_id = apt_no,
-                .seq_id = auth_hdr.seq_id,
-                .tx_counter = ack_cnt,
-            };
-            if (doorbell_frame_encrypt(&ack_hdr, slot->nvs.k_apt, ack_plain, ack_plain_len,
-                                       slot->last_ack.frame, sizeof(slot->last_ack.frame),
-                                       &slot->last_ack.frame_len) == ESP_OK) {
-                slot->last_ack.valid = true;
-                slot->last_ack.src_id = apt_no;
-                slot->last_ack.tx_counter = auth_hdr.tx_counter;
-                slot->last_ack.seq_id = auth_hdr.seq_id;
-                memcpy(slot->last_ack.req_tag, buf + len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
-                doorbell_udp_send_direct(lan_sock,
-                                         slot->last_ack.frame,
-                                         slot->last_ack.frame_len,
-                                         from_ip_host,
-                                         CONFIG_DOORBELL_UDP_PORT);
-            }
-            xSemaphoreGive(g_panel_mutex);
-            return;
-        }
-
-        /* Challenge verified: consume challenge, send ACK first, then energize door relay */
-        slot->active_challenge_nonce = 0;
-        slot->challenge_deadline_us = 0;
-        bool already_active = g_door_relay.is_active;
-
-        doorbell_pl_open_door_ack_t ack_pl = {
-            .req_tx_counter = auth_hdr.tx_counter,
-            .req_seq_id = auth_hdr.seq_id,
-            .status = already_active ? DOORBELL_STATUS_ALREADY_ACTIVE : DOORBELL_STATUS_OK,
-            .sender_ipv4 = panel_ip,
-            .panel_boot_id = g_panel_boot_id,
-            .challenge_nonce = 0,
-        };
-        uint8_t ack_plain[23];
-        size_t ack_plain_len = doorbell_pack_open_door_ack(&ack_pl, ack_plain);
-        doorbell_hdr_t ack_hdr = {
-            .magic = DOORBELL_PROTO_MAGIC,
-            .version = DOORBELL_PROTO_VERSION,
-            .msg_type = DOORBELL_MSG_OPEN_DOOR_ACK,
-            .flags = 0,
-            .src_id = DOORBELL_ID_PANEL,
-            .dst_id = apt_no,
-            .seq_id = auth_hdr.seq_id,
-            .tx_counter = ack_cnt,
-        };
-        if (doorbell_frame_encrypt(&ack_hdr, slot->nvs.k_apt, ack_plain, ack_plain_len,
-                                   slot->last_ack.frame, sizeof(slot->last_ack.frame),
-                                   &slot->last_ack.frame_len) == ESP_OK) {
-            slot->last_ack.valid = true;
-            slot->last_ack.src_id = apt_no;
-            slot->last_ack.tx_counter = auth_hdr.tx_counter;
-            slot->last_ack.seq_id = auth_hdr.seq_id;
-            memcpy(slot->last_ack.req_tag, buf + len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
-            doorbell_udp_send_direct(lan_sock,
-                                     slot->last_ack.frame,
-                                     slot->last_ack.frame_len,
-                                     from_ip_host,
-                                     CONFIG_DOORBELL_UDP_PORT);
-        }
-        xSemaphoreGive(g_panel_mutex);
-
-        if (doorbell_relay_trigger(&g_door_relay, NULL) == ESP_OK) {
-            doorbell_led_panel_start(LED_PANEL_DOOR_OPEN);
-            ESP_LOGI(TAG, "Door unlocked by apartment %u", (unsigned)apt_no);
-        }
+static void handle_lan_packet(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host)
+{
+    if (len < DOORBELL_MIN_FRAME_SIZE) {
+        return;
+    }
+    doorbell_hdr_t clear_hdr;
+    if (doorbell_hdr_parse(buf, len, &clear_hdr) != ESP_OK) {
+        return;
+    }
+    /* Pre-crypto destination & direction filter (I-53) */
+    if (clear_hdr.dst_id != DOORBELL_ID_PANEL ||
+        (clear_hdr.flags & DOORBELL_FLAG_DIR_UNIT_TO_PANEL) == 0 ||
+        clear_hdr.src_id < CONFIG_DOORBELL_PANEL_MIN_APT_NO ||
+        clear_hdr.src_id > CONFIG_DOORBELL_PANEL_MAX_APT_NO) {
         return;
     }
 
-    if (auth_hdr.msg_type == DOORBELL_MSG_HEARTBEAT_REQ) {
-        doorbell_pl_heartbeat_req_t hb;
-        if (doorbell_unpack_heartbeat_req(plain, plain_len, &hb) != ESP_OK) {
-            xSemaphoreGive(g_panel_mutex);
-            return;
-        }
-
-        slot->nvs.rx_floor = auth_hdr.tx_counter;
-        bool ip_changed = false;
-        if (hb.sender_ipv4 == from_ip_host && from_ip_host != 0 && slot->nvs.last_ipv4 != from_ip_host) {
-            slot->nvs.last_ipv4 = from_ip_host;
-            ip_changed = true;
-        }
-        if (ip_changed || (slot->nvs.rx_floor - slot->persisted_rx_floor) >= CONFIG_DOORBELL_NVS_COUNTER_BLOCK) {
-            if (doorbell_storage_panel_save_apt(&slot->nvs) == ESP_OK) {
-                slot->persisted_rx_floor = slot->nvs.rx_floor;
-            }
-        }
-        slot->last_heartbeat_us = now_us;
-        slot->no_report_warned = false;
-
-        uint32_t ack_cnt = 0;
-        if (doorbell_storage_panel_next_tx_counter(&slot->nvs,
-                                                   &slot->runtime_tx_counter,
-                                                   CONFIG_DOORBELL_NVS_COUNTER_BLOCK,
-                                                   &ack_cnt) == ESP_OK) {
-            doorbell_pl_heartbeat_ack_t ack_pl = {
-                .req_tx_counter = auth_hdr.tx_counter,
-                .req_seq_id = auth_hdr.seq_id,
-                .status = DOORBELL_STATUS_OK,
-                .sender_ipv4 = panel_ip,
-                .panel_boot_id = g_panel_boot_id,
-            };
-            uint8_t ack_plain[15];
-            size_t ack_plain_len = doorbell_pack_heartbeat_ack(&ack_pl, ack_plain);
-            doorbell_hdr_t ack_hdr = {
-                .magic = DOORBELL_PROTO_MAGIC,
-                .version = DOORBELL_PROTO_VERSION,
-                .msg_type = DOORBELL_MSG_HEARTBEAT_ACK,
-                .flags = 0,
-                .src_id = DOORBELL_ID_PANEL,
-                .dst_id = apt_no,
-                .seq_id = auth_hdr.seq_id,
-                .tx_counter = ack_cnt,
-            };
-            if (doorbell_frame_encrypt(&ack_hdr, slot->nvs.k_apt, ack_plain, ack_plain_len,
-                                       slot->last_ack.frame, sizeof(slot->last_ack.frame),
-                                       &slot->last_ack.frame_len) == ESP_OK) {
-                slot->last_ack.valid = true;
-                slot->last_ack.src_id = apt_no;
-                slot->last_ack.tx_counter = auth_hdr.tx_counter;
-                slot->last_ack.seq_id = auth_hdr.seq_id;
-                memcpy(slot->last_ack.req_tag, buf + len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
-                doorbell_udp_send_direct(lan_sock,
-                                         slot->last_ack.frame,
-                                         slot->last_ack.frame_len,
-                                         from_ip_host,
-                                         CONFIG_DOORBELL_UDP_PORT);
-            }
-        }
-        xSemaphoreGive(g_panel_mutex);
-
-        ESP_LOGI(TAG,
-                 "Heartbeat from apt %u: up=%lus rssi=%ddBm ch=%u rings=%u unacked_open=%u rej=%u disconn=%u last restart: %s (%u) heap=%lu/%luB fw=%u.%u",
-                 (unsigned)apt_no,
-                 (unsigned long)hb.uptime_s,
-                 (int)hb.ap_rssi,
-                 (unsigned)hb.ap_channel,
-                 (unsigned)hb.ring_count,
-                 (unsigned)hb.unacked_open_count,
-                 (unsigned)hb.rejected_count,
-                 (unsigned)hb.disconnect_count,
-                 doorbell_reset_reason_str(hb.reset_reason),
-                 (unsigned)hb.reset_reason,
-                 (unsigned long)hb.free_heap,
-                 (unsigned long)hb.min_free_heap,
-                 (unsigned)hb.fw_version_major,
-                 (unsigned)hb.fw_version_minor);
-        return;
-    }
-
+    lan_followup_t follow = {0};
+    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    handle_frame_locked(lan_sock, buf, len, from_ip_host, &clear_hdr, &follow);
     xSemaphoreGive(g_panel_mutex);
+
+    uint8_t apt_no = clear_hdr.src_id;
+    if (follow.open_door && doorbell_relay_trigger(&g_door_relay, NULL) == ESP_OK) {
+        doorbell_led_panel_start(LED_PANEL_DOOR_OPEN);
+        ESP_LOGI(TAG, "Door unlocked by apartment %u", (unsigned)apt_no);
+    }
+    if (follow.heartbeat_valid) {
+        const doorbell_pl_heartbeat_req_t *hb = &follow.heartbeat;
+        ESP_LOGI(TAG,
+                 "Heartbeat from apt %u: up=%lus rssi=%ddBm ch=%u rings=%u unacked_open=%u rej=%u disconn=%u "
+                 "last restart: %s (%u) heap=%lu/%luB fw=%u.%u",
+                 (unsigned)apt_no,
+                 (unsigned long)hb->uptime_s,
+                 (int)hb->ap_rssi,
+                 (unsigned)hb->ap_channel,
+                 (unsigned)hb->ring_count,
+                 (unsigned)hb->unacked_open_count,
+                 (unsigned)hb->rejected_count,
+                 (unsigned)hb->disconnect_count,
+                 doorbell_reset_reason_str(hb->reset_reason),
+                 (unsigned)hb->reset_reason,
+                 (unsigned long)hb->free_heap,
+                 (unsigned long)hb->min_free_heap,
+                 (unsigned)hb->fw_version_major,
+                 (unsigned)hb->fw_version_minor);
+    }
 }
 
 static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
@@ -959,6 +929,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     xSemaphoreGive(g_panel_mutex);
 
     if (cnt_err != ESP_OK) {
+        memset_explicit(k_apt, 0, sizeof(k_apt));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -985,6 +956,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     size_t frame_len = 0;
     if (doorbell_frame_encrypt(&req_hdr, k_apt, req_plain, req_plain_len,
                                frame, sizeof(frame), &frame_len) != ESP_OK) {
+        memset_explicit(k_apt, 0, sizeof(k_apt));
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -1044,17 +1016,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
                     ack_pl.req_seq_id == seq_id &&
                     (ack_pl.status == DOORBELL_STATUS_OK ||
                      ack_pl.status == DOORBELL_STATUS_ALREADY_ACTIVE)) {
-                    slot->nvs.rx_floor = rx_hdr.tx_counter;
-                    bool ip_changed = false;
-                    if (ack_pl.sender_ipv4 == from_ip && from_ip != 0 && slot->nvs.last_ipv4 != from_ip) {
-                        slot->nvs.last_ipv4 = from_ip;
-                        ip_changed = true;
-                    }
-                    if (ip_changed || (slot->nvs.rx_floor - slot->persisted_rx_floor) >= CONFIG_DOORBELL_NVS_COUNTER_BLOCK) {
-                        if (doorbell_storage_panel_save_apt(&slot->nvs) == ESP_OK) {
-                            slot->persisted_rx_floor = slot->nvs.rx_floor;
-                        }
-                    }
+                    slot_accept_rx_locked(slot, rx_hdr.tx_counter, ack_pl.sender_ipv4, from_ip);
                     slot->last_heartbeat_us = esp_timer_get_time();
                     slot->no_report_warned = false;
                     s_last_any_module_rx_us = slot->last_heartbeat_us;
@@ -1072,6 +1034,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
         }
     }
 
+    memset_explicit(k_apt, 0, sizeof(k_apt));
     if (acked) {
         doorbell_led_panel_start(LED_PANEL_RESULT_OK);
     } else {
@@ -1166,9 +1129,8 @@ static void panel_worker_task(void *arg)
             step_pairing_discovery();
         }
 
-        uint8_t ring_apt = s_pending_ring_apt;
-        if (ring_apt != 0) {
-            s_pending_ring_apt = 0;
+        uint8_t ring_apt = 0;
+        if (xQueueReceive(s_ring_queue, &ring_apt, 0) == pdTRUE) {
             execute_ring_transaction(lan_sock, ring_apt);
         }
 
@@ -1188,6 +1150,8 @@ void app_main(void)
 {
     g_panel_mutex = xSemaphoreCreateMutex();
     configASSERT(g_panel_mutex != NULL);
+    s_ring_queue = xQueueCreate(RING_QUEUE_LEN, sizeof(uint8_t));
+    configASSERT(s_ring_queue != NULL);
 
     rtc_silence_init_or_validate();
 
@@ -1218,9 +1182,9 @@ void app_main(void)
         /* A corrupt or incompatible panel_cfg blob must not abort() into an endless boot loop that also disables the
          * keypad. Run with in-RAM Kconfig defaults; nothing is erased at boot (I-13). doorbell_storage refuses to save
          * panel_cfg in this state, so the stored record (with its unique factory codes, I-5) is never overwritten by
-         * the shared defaults; recovery is a full re-provision with Flash NVS (I-14). */
+         * the shared defaults; recovery is a full re-flash with the flasher (I-14). */
         ESP_LOGE(TAG, "CRITICAL: panel_cfg unreadable (%s) — keypad codes disabled, stored blob left intact; "
-                      "re-provision with Flash NVS", esp_err_to_name(cfg_err));
+                      "re-flash with the flasher", esp_err_to_name(cfg_err));
         /* Fail closed (I-5): do NOT fall back to the shared built-in codes, or anyone knowing them could open the door
          * or run building reset. Admin/user/factory codes stay empty, so ct_equal_code() rejects every keypad and
          * console code. Visitors can still ring, and residents can still open the door from their modules. */
@@ -1229,6 +1193,14 @@ void app_main(void)
         strncpy(g_panel_cfg.wifi_ssid, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_SSID, sizeof(g_panel_cfg.wifi_ssid) - 1);
         strncpy(g_panel_cfg.wifi_pass, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_PASS, sizeof(g_panel_cfg.wifi_pass) - 1);
         doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+    } else {
+        /* First boot after Burn / Flash: remember the provisioned building Wi-Fi for the hidden-button factory
+         * reset (no-op once recorded). Without it the factory reset refuses rather than guessing. */
+        esp_err_t fw_err = doorbell_storage_panel_snapshot_factory_wifi(&g_panel_cfg);
+        if (fw_err != ESP_OK) {
+            ESP_LOGW(TAG, "Factory Wi-Fi record unavailable (%s): hidden-button factory reset will be refused",
+                     esp_err_to_name(fw_err));
+        }
     }
 
     uint32_t loaded_apts = 0;

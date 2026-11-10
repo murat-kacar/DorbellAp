@@ -187,7 +187,7 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
 | `MODE_PAIR_DISCOVER` | `*<admin>*1*<apt>#` (requires STA connected with IPv4, `I-31`) | ON (`Doorbell-Pair-<MAC4>`, open, `.max_connection=4`, bound to `192.168.4.1` or `10.195.4.1` on subnet conflict `I-32`) | Connected (background scans paused `I-31`) | `*#` cancels pairing; visitor rings (`<apt>#`) and module `OPEN_DOOR_REQ` remain active; other `*` commands return error LED |
 | `MODE_PAIR_COMPLETE` | Single module provisioned (`PAIR_CONFIRM` received); +10 s timer started | OFF (closed immediately when discovery ends) | Connected on LAN | Visitor rings and `OPEN_DOOR_REQ` active; other `*` commands rejected until `PAIR_COMPLETE` or +10 s timeout |
 | `MODE_PORTAL` | `*<admin>*5#` (120 s timer) | ON (`Doorbell-Setup`, `WIFI_AUTH_WPA3_PSK` / SAE, `pmf_cfg.required=true`, passphrase = admin code `I-4`; `httpd` bound strictly to SoftAP netif `I-47`) | Reconnect/scan paused until form submission (`I-40`) | `*#` or hidden reset button closes portal immediately; visitor rings and `OPEN_DOOR_REQ` (if STA remains associated) served; other admin commands rejected |
-| `MODE_RESETTING` | Hidden reset button held 10–60 s or `*<admin>*6*<admin>#` | Closed before reset | Active | None (commits NVS changes and restarts if building reset) |
+| `MODE_RESETTING` | Hidden reset button held 10–60 s (factory reset) or `*<admin>*6*<admin>#` (building reset) | Closed before reset | Active | None (commits NVS changes and restarts) |
 
 ### 5.2. Two-Phase Pairing Commit & Rollback (`I-30`, `I-45`)
 
@@ -230,7 +230,17 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    a different channel, the client may be disconnected from `Doorbell-Setup` during the test and never receive the
    HTTP response. The status LED (2 s solid = committed, 1 s fast blink = rolled back) is therefore the authoritative
    result indicator; the HTML result page is best-effort.
-4. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or
+4. **Network list:** When the portal opens (and on `GET /scan`, not during a credential test) the panel runs one
+   non-blocking active scan that returns to the SoftAP channel between scanned channels (default home-channel dwell),
+   so connected clients stay associated. Hidden SSIDs are skipped, BSSs with the same SSID are merged (strongest RSSI,
+   802.11b support if any BSS has it), at most 15 networks are listed by signal strength. With
+   `CONFIG_DOORBELL_WIFI_STA_11B_ONLY` a network without 802.11b rates is shown as incompatible and cannot be selected.
+   The form submits `net=<index>&gen=<scan generation>`; the panel takes the SSID bytes from its own cached list and
+   rejects a stale generation, an out-of-range index or an incompatible network. `net=m` (or no `net`) uses the typed
+   `ssid` field (hidden networks). All SSIDs are HTML-escaped. No background scanning (`I-31`).
+5. **Captive portal:** DNS responder on UDP 53 bound to the SoftAP (every `A` query → SoftAP IP, TTL 10 s; other
+   types → empty `NOERROR`) and `302` from unknown paths to the form, so phones open the page by themselves.
+6. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or
    short values are rejected before any connection attempt.
 
 ---
@@ -297,7 +307,7 @@ active steady-state pattern. Dim brightness (`10%`) is defined as the perceived 
 | `2` | `LED_PANEL_RESULT_OK` | Solid ON (`100%`) | One-shot (`2000 ms`) |
 | `3` | `LED_PANEL_RESULT_ERR` | Fast blink (`100 ms` ON / `100 ms` OFF, `200 ms` period) | One-shot (`1000 ms`) |
 | `4` | `LED_PANEL_NO_RESPONSE` | Medium blink (`250 ms` ON / `250 ms` OFF, `500 ms` period) | One-shot (`3000 ms`) |
-| `5` | `LED_PANEL_RESET_HOLD` | Solid ON with brief OFF dip (`900 ms` ON / `100 ms` OFF) | Active while hidden code-reset button held in `10–60 s` window |
+| `5` | `LED_PANEL_RESET_HOLD` | Solid ON with brief OFF dip (`900 ms` ON / `100 ms` OFF) | Active while hidden factory-reset button held in `10–60 s` window |
 | `6` | `LED_PANEL_TYPING` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while keypad buffer non-empty (`< 10 s` timeout) |
 | `7` | `LED_PANEL_PAIRING` | Repeating double flash (`100 ms` ON, `100 ms` OFF, `100 ms` ON, `700 ms` OFF) | Active during `MODE_PAIR_DISCOVER` / `MODE_PAIR_COMPLETE` |
 | `8` | `LED_PANEL_PORTAL` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while `MODE_PORTAL` is open (`120 s`) after the initial `2 s` solid confirmation (`I-40`) |

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdbool.h>
+#include <stdbool.h> /* also compiled by the host compiler for the linux test target */
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"

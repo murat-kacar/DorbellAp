@@ -13,7 +13,7 @@ import socket
 import sys
 import time
 
-DEFAULT_PORT = 19500
+DEFAULT_PORT = 19500  # CONFIG_DOORBELL_UDP_PORT default (components/doorbell_common/Kconfig.projbuild)
 PROBE_PAYLOAD = b"DORBELLAP_L2_COMMISSIONING_PROBE_V1"
 ACK_PAYLOAD = b"DORBELLAP_L2_COMMISSIONING_ACK_V1"
 
@@ -46,7 +46,7 @@ def run_sender(port: int, count: int) -> int:
                 rtt_ms = (time.monotonic() - t0) * 1000.0
                 print(f"[{seq}/{count}] Broadcast -> Unicast ACK from {addr[0]} in {rtt_ms:.1f} ms")
                 success += 1
-        except socket.timeout:
+        except TimeoutError:
             print(f"[{seq}/{count}] Timeout (>500 ms) — check AP client isolation / broadcast filter")
         time.sleep(0.2)
 
@@ -70,4 +70,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

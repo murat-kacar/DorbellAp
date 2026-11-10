@@ -1,10 +1,8 @@
 #pragma once
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
-#include "esp_netif.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,6 +82,34 @@ uint16_t doorbell_net_get_softap_sta_count(void);
  * @brief Scan for an open Pairing SoftAP matching prefix "Doorbell-Pair-" and connect STA to it.
  */
 esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout_ms);
+
+/** Maximum number of distinct networks kept from one asynchronous scan */
+#define DOORBELL_NET_SCAN_MAX 15
+
+/** One network (SSID) from the asynchronous scan, strongest BSS of that SSID */
+typedef struct {
+    char ssid[33];      /**< NUL-terminated SSID as received (may be non-UTF-8) */
+    int8_t rssi;        /**< dBm of the strongest BSS with this SSID */
+    bool secured;       /**< authmode != OPEN */
+    bool supports_11b;  /**< some BSS advertises 802.11b rates (needed with CONFIG_DOORBELL_WIFI_STA_11B_ONLY) */
+} doorbell_net_ap_info_t;
+
+/**
+ * @brief Start a non-blocking scan (setup portal network list). Results arrive via WIFI_EVENT_SCAN_DONE and are cached;
+ *        hidden SSIDs are skipped, duplicates merged, entries sorted by signal strength. The scan returns to the home
+ *        channel between channels so SoftAP clients stay connected.
+ * @return ESP_OK, ESP_ERR_INVALID_STATE if a scan is already running, or the esp_wifi_scan_start() error.
+ */
+esp_err_t doorbell_net_scan_start_async(void);
+
+/**
+ * @brief Copy the cached scan results.
+ * @param[out] out          Array of at least @p max entries.
+ * @param[out] out_gen      Result generation, incremented on every completed scan (0 = no scan finished yet).
+ * @param[out] out_scanning true while a scan is still running.
+ * @return number of entries written.
+ */
+size_t doorbell_net_get_scan_results(doorbell_net_ap_info_t *out, size_t max, uint32_t *out_gen, bool *out_scanning);
 
 /**
  * @brief Create a UDP socket with SO_BROADCAST and bounded SO_RCVTIMEO (I-46).

@@ -1,9 +1,10 @@
 # ADR 0015: Production Security Hardening (Secure Boot v2, Flash Encryption, NVS Encryption)
 
 - **Status:** Accepted (2026-11-10) — Option B, implemented as the separate flasher **Burn** profile (§7); first
-  hardware run on one spare board per §6. The **Development** and **Production** profiles stay unhardened.
+  hardware run on one spare board per §6. The **Production** profile stays unhardened (the former Development
+  profile was removed on 2026-11-10).
 - **Date:** 2026-11-10
-- **Supersedes (if accepted):** parts of ADR 0013 (offline, no OTA, UART re-flash) and AGENTS.md §8 item 5
+- **Supersedes:** for the Burn profile, parts of [ADR 0013](0013-offline-operation-no-ota.md) (offline, no OTA, UART re-flash) and AGENTS.md §8 item 5
   (`I-2`, `I-16`, `I-17`: Secure Boot / flash encryption / NVS encryption stay disabled)
 - **Related:** [production-checklist.md](../production-checklist.md), design review `I-2`, `I-16`, `I-17`, `I-56`
 
@@ -75,7 +76,7 @@ Consequences of Option B:
   because the first boot encrypts flash and closes UART access. With NVS encryption the provisioned NVS data must
   match the `nvs_keys` partition prepared at the factory; the exact sequence is validated in the prototype.
 - Flashing a Production image to a chip and powering it is irreversible for that chip. The flasher must require an
-  explicit confirmation and must keep Development boards on the Development profile.
+  explicit confirmation and must keep bench boards on the Production profile.
 - One-time keys: each Burn build has its own key digest (recorded in the build-info sidecar), and all chips burned
   from the same `_burn.bin` share it. Knowing a key would not help an attacker: burned chips accept no new image
   (UART download mode disabled, release flash encryption), and a blank chip accepts any key anyway.

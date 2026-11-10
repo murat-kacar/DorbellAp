@@ -1,5 +1,5 @@
 # DorbellAp Burn profile overlay (ADR 0015, Option B) - applied by the flasher on top of the role's sdkconfig
-# in a separate build directory (build_burn/). Development and Production builds never read this file.
+# in a separate build directory (build_burn/). Production builds never read this file.
 # Every line is authoritative: the flasher replaces the matching CONFIG_ line (set or "is not set") and kconfgen
 # resolves the dependencies. The flasher checks the resolved values after the build.
 

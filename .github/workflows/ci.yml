@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  firmware:
+    name: Build ${{ matrix.project }} (esp32, Production defaults)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [firmware/panel, firmware/unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32
+          path: ${{ matrix.project }}
+
+  host-unit:
+    name: Host unit tests (linux target)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run test/host_unit
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd test/host_unit
+          idf.py --preview set-target linux
+          idf.py build
+          ./build/doorbell_host_unit.elf
+
+  python:
+    name: Protocol vectors and Python lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install cryptography ruff==0.17.4
+      - run: python tools/verify_protocol_vectors.py
+      - run: ruff check flasher tools
+      - run: ruff format --check flasher tools

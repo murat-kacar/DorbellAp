@@ -1,7 +1,6 @@
 #include "panel_state.h"
+#include <stdatomic.h>
 #include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
 #include "freertos/queue.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -23,9 +22,9 @@ static esp_timer_handle_t s_input_timeout_timer = NULL;
  * writes happen in panel_worker_task via panel_keypad_process() so the esp_timer task (which also drives the door
  * relay de-energize timer) is never blocked. */
 static QueueHandle_t s_key_queue = NULL;
-static volatile bool s_input_timeout_pending = false;
-static volatile bool s_key_overflow_pending = false;
-static volatile int64_t s_lockout_deadline_us = 0;
+static _Atomic bool s_input_timeout_pending = false;
+static _Atomic bool s_key_overflow_pending = false;
+static _Atomic int64_t s_lockout_deadline_us = 0;
 static uint32_t s_lockout_persist_divider = 0;
 
 static void clear_keypad_buffer(void)
@@ -145,8 +144,8 @@ static bool ct_equal_code(const char *input, size_t input_len, const char *store
 
     int diff = mbedtls_ct_memcmp(a, b, sizeof(a));
     bool len_ok = (input_len == required_len) && (stored_len == required_len);
-    memset(a, 0, sizeof(a));
-    memset(b, 0, sizeof(b));
+    memset_explicit(a, 0, sizeof(a));
+    memset_explicit(b, 0, sizeof(b));
     return (diff == 0) && len_ok;
 }
 
@@ -401,7 +400,7 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
-            memset(&next, 0, sizeof(next));
+            memset_explicit(&next, 0, sizeof(next));
             break;
         }
         case '4': {
@@ -421,7 +420,7 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
             } else {
                 doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
             }
-            memset(&next, 0, sizeof(next));
+            memset_explicit(&next, 0, sizeof(next));
             break;
         }
         case '5':
@@ -469,7 +468,7 @@ static void process_key_locked(char ch)
         local_seq[local_len] = '\0';
         clear_keypad_buffer();
         evaluate_sequence_locked(local_seq, local_len);
-        memset(local_seq, 0, sizeof(local_seq));
+        memset_explicit(local_seq, 0, sizeof(local_seq));
     } else {
         if (s_key_len + 1 < KEYPAD_BUF_MAX) {
             s_key_buf[s_key_len++] = ch;
@@ -491,8 +490,7 @@ void panel_keypad_process(void)
         return;
     }
 
-    if (s_input_timeout_pending) {
-        s_input_timeout_pending = false;
+    if (atomic_exchange(&s_input_timeout_pending, false)) {
         xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
         clear_keypad_buffer();
         xSemaphoreGive(g_panel_mutex);
@@ -517,7 +515,7 @@ void panel_keypad_process(void)
     }
 }
 
-/* ---- Hidden Code-Reset Button on Panel (GPIO 19, 10-60 s window) ---- */
+/* ---- Hidden Factory-Reset Button on Panel (GPIO 19, 10-60 s window) ---- */
 
 static void panel_reset_btn_down_cb(void *button_handle, void *usr_data)
 {
@@ -555,7 +553,7 @@ static void panel_reset_btn_up_cb(void *button_handle, void *usr_data)
     uint32_t max_ms = (uint32_t)CONFIG_DOORBELL_PANEL_RESET_MAX_HOLD_S * 1000U;
 
     if (held_ms >= min_ms && held_ms <= max_ms) {
-        panel_action_reset_codes_to_factory();
+        panel_action_factory_reset();
     }
 }
 
@@ -612,7 +610,7 @@ esp_err_t panel_keypad_init(void)
                                                (void *)(uintptr_t)i));
     }
 
-    /* Hidden code reset button (GPIO 19) */
+    /* Hidden factory reset button (GPIO 19) */
     button_config_t rst_cfg = {0};
     button_gpio_config_t rst_gpio = {
         .gpio_num = CONFIG_DOORBELL_PANEL_GPIO_RESET_BTN,

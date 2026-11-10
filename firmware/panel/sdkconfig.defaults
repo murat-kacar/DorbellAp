@@ -1,26 +1,19 @@
-# DorbellAp Building Entrance Panel Default Configuration
+# DorbellAp Building Entrance Panel - only the deviations from the ESP-IDF v6.1 defaults (AGENTS.md I-70).
+#
+# Relied-upon ESP-IDF defaults (not repeated here; do not change in menuconfig): 2 MB flash, single factory app
+# partition (no OTA, ADR 0013), 160 MHz CPU, brownout detector, interrupt WDT 300 ms, task WDT enabled with a 5 s
+# timeout, DHCP ARP check of the offered address, SoftAP WPA3-SAE support.
 CONFIG_DOORBELL_ROLE_PANEL=y
 
-# Flash Configuration (2 MB, single factory partition, no OTA — ADR 0013)
-CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
-CONFIG_PARTITION_TABLE_SINGLE_APP=y
+# Release build (-Os): the -Og default leaves the panel app with only ~8 % of the 1 MB slot
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
-# CPU & Watchdog Safety (I-46, I-70)
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
-CONFIG_ESP_BROWNOUT_DET=y
-CONFIG_ESP_INT_WDT=y
-CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
-CONFIG_ESP_TASK_WDT_EN=y
-CONFIG_ESP_TASK_WDT_INIT=y
+# Restart on a hung task instead of only logging it (I-46)
 CONFIG_ESP_TASK_WDT_PANIC=y
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
 
-# Storage & Wi-Fi Security (I-4, I-13, I-23, I-70)
+# Storage reliability (I-13); building Wi-Fi credentials never stored by the Wi-Fi driver (I-23)
 CONFIG_NVS_FLASH_VERIFY_ERASE=y
 CONFIG_ESP_WIFI_NVS_ENABLED=n
-CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=y
 
-# lwIP Fast DHCP Recovery & ARP Check (I-38, I-70)
+# Faster IP recovery after a reboot (I-38)
 CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
-CONFIG_LWIP_DHCP_DOES_ARP_CHECK=y
-

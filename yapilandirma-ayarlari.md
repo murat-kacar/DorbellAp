@@ -105,8 +105,8 @@ ESP32'de GPIO 6–11 flash'a ayrılmıştır; GPIO 34–39 sadece giriştir ve d
 | Door relay | 23 | Kapı kilidi rölesi (açılışta pin yönü ayarlanmadan önce inaktif seviye yazılır) |
 | Door relay is driven LOW to open | Açık | Röle modülü LOW ile çekiyorsa açık kalmalı. **Yanlış ayarlanırsa kilit beklemede açık durur.** |
 | Status LED | 2 | Durum LED'i |
-| Hidden code reset button | 19 | Gizli şifre sıfırlama butonu |
-| Code reset button pulls the GPIO LOW | Açık | Buton GND'ye çekiyorsa açık |
+| Hidden factory reset button GPIO | 19 | Gizli fabrika sıfırlama butonu (şifreler, bina Wi-Fi ve daire kayıtları yükleme anındaki haline döner) |
+| Factory reset button pulls the GPIO LOW | Açık | Buton GND'ye çekiyorsa açık |
 | Enable the internal pull resistor | Açık | Dahili direnci kullanır; harici direnç varsa kapatılabilir |
 
 ### 2.3. Keypad
@@ -131,7 +131,7 @@ ESP32'de GPIO 6–11 flash'a ayrılmıştır; GPIO 34–39 sadece giriştir ve d
 | User code length | 4 | Kullanıcı şifresinin hane sayısı (4–8). |
 
 Şifre uzunluğu değişirse fabrika şifreleri de aynı uzunlukta yüklenmelidir. Flaşlama programı şifreleri formdaki
-uzunluğa göre kontrol eder; eski uzunlukla derlenmiş bir firmware yüklenirse panel şifreleri kabul etmez (ADR 0014).
+uzunluğa göre kontrol eder; eski uzunlukla derlenmiş bir firmware yüklenirse panel şifreleri kabul etmez ([ADR 0014](docs/adr/0014-code-lengths.md)).
 
 ### 2.6. Keypad lockout
 
@@ -146,11 +146,11 @@ uzunluğa göre kontrol eder; eski uzunlukla derlenmiş bir firmware yüklenirse
 sonrasında hep 600 saniyede kalır (kilit durumu NVS'de saklanır, elektrik kesip açmak kilidi sıfırlamaz). Doğru şifre
 seviyeyi sıfırlar.
 
-### 2.7. Code reset button
+### 2.7. Factory reset button
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| Minimum hold | 10 s | Bundan kısa basış şifreleri sıfırlamaz |
+| Minimum hold | 10 s | Bundan kısa basış fabrika sıfırlama yapmaz |
 | Maximum hold | 60 s | Bundan uzun basış (sıkışmış buton) sıfırlamaz |
 
 ### 2.8. Diğer
@@ -236,7 +236,7 @@ bileşenlerine aittir. Bir sebep olmadıkça varsayılanda bırakın.
 | Interrupt watchdog | Açık (300 ms) | Kesmeleri uzun süre kapatan bir hatada cihazı yeniden başlatır (PSRAM olmayan kartlarda 300 ms). **Açık kalmalı.** |
 | Task watchdog / panic / timeout | Panic açık, 5 s | Kilitlenen veya CPU'yu bırakmayan bir görevde cihazı yeniden başlatır. Uygulama görevleri ve zamanlayıcı hatları watchdog'a kaydedilir. Panic kapatılırsa watchdog sadece uyarı yazar. |
 | Console UART / baud rate | UART0 / 115200 | Seri monitör portu ve hızı |
-| Flash mode / frequency / size | DIO / 40 MHz / 2 MB | Flash bellek ayarları. Boyut 2 MB'tır; kartla uyumlu olmalı (OTA kullanılmaz, ADR 0013). |
-| Compiler optimization | Development: Debug (`-Og`) · Production: Size (`-Os`) | Flasher'daki profil seçer. Production (üretim) derlemesi uygulamayı küçültür ve 1 MB'lık uygulama bölümünde yer açar; Development hata ayıklamaya uygun mevcut ayardır. Assert kontrolleri ikisinde de açıktır. Production profili eFuse yakmaz. |
+| Flash mode / frequency / size | DIO / 40 MHz / 2 MB | Flash bellek ayarları. Boyut 2 MB'tır; kartla uyumlu olmalı (OTA kullanılmaz, [ADR 0013](docs/adr/0013-offline-operation-no-ota.md)). |
+| Compiler optimization | Size (`-Os`) | Production ve Burn aynı küçültülmüş derlemeyi kullanır; 1 MB'lık uygulama bölümünde yer açar (ESP-IDF varsayılanı `-Og` panel için alanı neredeyse dolduruyordu). Assert kontrolleri açıktır. Production profili eFuse yakmaz. |
 | Burn profili (kilitli cihaz) | Kapalı (yalnızca Burn seçilince) | Production derlemesine ek olarak Secure Boot v2, flash şifreleme (release), NVS şifreleme ve UART indirme modunun kalıcı kapatılmasını açar (`firmware/sdkconfig.burn`, `firmware/partitions_burn.csv`, ADR 0015). Kart ilk açılışta eFuse yakar: bir daha firmware yüklenemez, okunamaz, silinemez. Şifreler, Wi-Fi ve eşleştirme çalışma sırasında değiştirilebilir kalır; derleme ayarları (bu tablodaki tüm satırlar) değiştirilemez. Saklanacak bir anahtar yoktur: her Burn derlemesi kendi tek kullanımlık imza anahtarını üretir, firmware'i imzalar ve anahtarı siler. |
 | Default log verbosity | Info | Monitörde ne kadar ayrıntı görüneceği (şifreler ve anahtarlar hiçbir seviyede loglanmaz). |

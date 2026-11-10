@@ -105,7 +105,7 @@ static int cmd_doorbell_wifi(int argc, char **argv)
     if (err == ESP_OK) {
         g_panel_cfg = next;
     }
-    memset(&next, 0, sizeof(next));
+    memset_explicit(&next, 0, sizeof(next));
     xSemaphoreGive(g_panel_mutex);
 
     if (err != ESP_OK) {

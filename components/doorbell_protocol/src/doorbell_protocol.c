@@ -1,7 +1,7 @@
 #include "doorbell_protocol.h"
 #include <string.h>
 #include "esp_log.h"
-#include "mbedtls/constant_time.h"
+#include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_proto";
 
@@ -135,7 +135,7 @@ esp_err_t doorbell_x25519_derive_kpair(const doorbell_x25519_ctx_t *ctx,
                                                 sizeof(shared_secret),
                                                 &shared_len);
     if (status != PSA_SUCCESS || shared_len != DOORBELL_X25519_PUB_SIZE) {
-        memset(shared_secret, 0, sizeof(shared_secret));
+        mbedtls_platform_zeroize(shared_secret, sizeof(shared_secret));
         ESP_LOGE(TAG, "ECDH key agreement failed: %d", (int)status);
         return ESP_FAIL;
     }
@@ -146,7 +146,7 @@ esp_err_t doorbell_x25519_derive_kpair(const doorbell_x25519_ctx_t *ctx,
         zero_check |= shared_secret[i];
     }
     if (zero_check == 0) {
-        memset(shared_secret, 0, sizeof(shared_secret));
+        mbedtls_platform_zeroize(shared_secret, sizeof(shared_secret));
         ESP_LOGE(TAG, "Rejected low-order X25519 public key");
         return ESP_ERR_INVALID_STATE;
     }
@@ -181,7 +181,7 @@ esp_err_t doorbell_x25519_derive_kpair(const doorbell_x25519_ctx_t *ctx,
     }
 
     psa_key_derivation_abort(&op);
-    memset(shared_secret, 0, sizeof(shared_secret));
+    mbedtls_platform_zeroize(shared_secret, sizeof(shared_secret));
 
     if (status != PSA_SUCCESS) {
         memset(out_k_pair, 0, DOORBELL_KEY_SIZE);
@@ -676,7 +676,7 @@ esp_err_t doorbell_pack_pair_challenge(const uint8_t panel_mac[6],
                                    out + prefix_len,
                                    cap - prefix_len,
                                    &enc_len);
-    memset(plain, 0, sizeof(plain));
+    mbedtls_platform_zeroize(plain, sizeof(plain));
     if (err != ESP_OK) {
         return err;
     }
@@ -737,7 +737,7 @@ esp_err_t doorbell_decrypt_provision_blob(const uint8_t *frame,
                                    sizeof(plain),
                                    &plain_len);
     if (err != ESP_OK || plain_len != DOORBELL_PROVISION_BLOB_PLAIN_SIZE) {
-        memset(plain, 0, sizeof(plain));
+        mbedtls_platform_zeroize(plain, sizeof(plain));
         return ESP_ERR_INVALID_MAC;
     }
 
@@ -751,7 +751,7 @@ esp_err_t doorbell_decrypt_provision_blob(const uint8_t *frame,
     memcpy(out_blob->k_apt, &plain[103], DOORBELL_KEY_SIZE);
     out_blob->heartbeat_interval_s = get_be16(&plain[119]);
 
-    memset(plain, 0, sizeof(plain));
+    mbedtls_platform_zeroize(plain, sizeof(plain));
     return ESP_OK;
 }
 

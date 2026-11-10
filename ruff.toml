@@ -1,0 +1,25 @@
+# Python lint / format (flasher, tools). Rule set as in ESP-IDF v6.1 ruff.toml; double quotes are kept because the
+# project's Python code already uses them (switching would reformat every line).
+line-length = 120
+target-version = "py310"
+# flasher/ and tools/ modules import each other by bare name
+src = [".", "flasher", "tools"]
+exclude = ["graphify-out", "firmware/*/build", "firmware/*/build_burn", "firmware/*/managed_components", "test/*/build"]
+
+[format]
+quote-style = "double"
+
+[lint]
+select = [
+    "A",  # flake8-builtins
+    "E",  # pycodestyle
+    "F",  # pyflakes
+    "W",  # pycodestyle
+    "I",  # import order
+    "UP", # pyupgrade
+]
+ignore = ["E203", "E221", "E225", "E231", "E241"]
+
+[lint.per-file-ignores]
+# imports follow ensure_idf_python(), which may re-launch the script in the ESP-IDF Python environment
+"flasher/flasher_gui.py" = ["E402"]

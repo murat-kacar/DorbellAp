@@ -40,6 +40,10 @@ Normative companion specifications:
 4. **Secret Redaction in Logs & UI (`I-25`, `I-47`):**
    - Never log, print, or echo admin codes, user codes, Wi-Fi passphrases, cryptographic keys, or nonces at any
      `ESP_LOG*` level or in HTTP responses. When adapting ESP-IDF Wi-Fi examples, strip all passphrase format strings.
+   - Wipe local buffers holding such secrets (keys, codes, passphrases, provisioning blobs) on every exit path with
+     C23 `memset_explicit()` (picolibc); a plain `memset()` on a dying local may be removed by the optimizer.
+     `doorbell_protocol` is also built by the host compiler for the `linux` test target and uses
+     `mbedtls_platform_zeroize()` instead.
 5. **Single-Branch Git Policy (Mandatory):**
    - Maintain strictly a single Git branch (`master`) across the entire project lifecycle. Never create additional
      branches (`git branch`, `git checkout -b`, `git switch -c`, git worktrees, or branched subagent workspaces); all
@@ -77,8 +81,17 @@ Normative companion specifications:
   - Repository layout:
     - `firmware/panel` — Building entrance panel (door station)
     - `firmware/unit` — Apartment module (indoor unit)
-    - `components/` — Shared components (`protocol`, NVS storage, LED indicator wrapper, button wrapper, etc.)
-- **Offline Operation & Partition Table:** No internet connectivity and no OTA updates (ADR 0013). Uses the single
+    - `components/` — Shared components: `doorbell_protocol` (framing, AEAD, pairing KDF), `doorbell_storage` (NVS
+      records), `doorbell_net` (Wi-Fi STA/SoftAP, UDP, network scan), `doorbell_captive_dns` (portal DNS answer
+      builder), `doorbell_led`, `doorbell_common` (Kconfig, relay, watchdog, compile-time checks)
+    - `test/host_unit` — Unity tests of `doorbell_protocol` and `doorbell_captive_dns` built for the ESP-IDF `linux`
+      target; `.github/workflows/ci.yml` builds both firmwares, builds and runs these tests, and runs the Python checks
+      (`tools/verify_protocol_vectors.py`, ruff)
+    - `flasher/` — Tk flasher: `flasher_gui.py` (entry point, form, validation), `flasher_config.py` (paths, GPIO
+      rules, form generated from `Kconfig.projbuild`), `flasher_build.py`, `flasher_device.py` (detect, Flash, Burn,
+      Scan), `flasher_images.py` (image / partition / NVS helpers), `flasher_widgets.py`, `flasher_env.py` (ESP-IDF
+      Python re-launch)
+- **Offline Operation & Partition Table:** No internet connectivity and no OTA updates ([ADR 0013](docs/adr/0013-offline-operation-no-ota.md)). Uses the single
   `factory` application partition table on a 2 MB flash.
 - **Normal Operating Mode & STA Reconnect Policy (`I-11`, `I-35`, `I-38`):**
   - Both panel and apartment modules operate in `WIFI_MODE_STA` during normal operation and obtain IPv4 addresses via
@@ -130,17 +143,31 @@ Normative companion specifications:
      interface's last subnet; if the building LAN uses `192.168.4.0/24`, switch the SoftAP IP to `10.195.4.1/24`.
    - **Interface Binding (`I-47`):** Bind `esp_http_server` strictly to the SoftAP interface (`httpd_config_t.if_name` /
      SoftAP IP check) so the portal is unreachable from the building LAN. Never echo the stored passphrase in the form.
+   - **Captive portal:** while the portal is open, a DNS responder bound to the SoftAP (UDP 53, `SO_BINDTODEVICE`)
+     answers every `A` query with the SoftAP IP (TTL 10 s; other types get an empty `NOERROR`), and unknown HTTP paths
+     get `302` to the form, so phones open the page by themselves instead of routing it to mobile data. The DHCP
+     server already offers the SoftAP IP as DNS. Stopped before `httpd_stop()` when the portal closes.
    - **Test-Before-Commit & Rollback (`I-40`):** When new credentials are submitted, test-associate on `STA` (15 s
      timeout) before closing the portal. Commit to NVS and close the portal only after `IP_EVENT_STA_GOT_IP`; on
      failure, roll back to the previous credentials, display the error in the browser, and flash the 1 s error LED.
-   - **Admin Code Length:** Default **8 digits** (configurable range: **8–10 digits**, ADR 0014).
+   - **Admin Code Length:** Default **8 digits** (configurable range: **8–10 digits**, [ADR 0014](docs/adr/0014-code-lengths.md)).
    - **Single-Radio Rule (`I-31`):** While the setup portal is active (until form submission) or while pairing discovery
      is active, background `STA` channel scanning and auto-reconnect timers are paused so the single ESP32 radio does
-     not hop channels.
+     not hop channels. Exception: the portal's network list (`docs/protocol.md` §5.3 item 4) runs one non-blocking scan
+     when the portal opens and one per `GET /scan`, returning to the SoftAP channel between scanned channels.
 4. **Apartment Module Wi-Fi Credentials:**
    - Apartment modules ship with a single generic firmware containing no building Wi-Fi credentials; they receive the
      building AP SSID, passphrase, channel hint, panel LAN IPv4, and `Heartbeat interval` from the panel **during
      pairing** (`I-39`) and store them in NVS.
+5. **Flasher Install & Hidden Factory Reset:**
+   - The flasher's **Flash** is a full install: `esptool write-flash --erase-all` with bootloader, partition table,
+     app and (panel) an NVS image holding the card's admin / user codes and optional building Wi-Fi. Every Flash
+     therefore also deletes registrations and pairing state. There is no separate NVS-only flash, reset or erase
+     action in the GUI.
+   - On its first boot after provisioning, the panel snapshots the flashed codes and Wi-Fi into a `factory_wifi`
+     record. Holding the hidden reset button (panel GPIO 19, 10–60 s) restores codes, portal password and building
+     Wi-Fi from that snapshot, clears the lockout and erases every apartment registration — on Production and Burn
+     alike. If the snapshot is missing, the reset is refused and the error LED shows.
 
 ---
 
@@ -232,7 +259,11 @@ Normative companion specifications:
   - All long-duration timers (keypad lockout, silence restart backoff, heartbeat tracking) MUST use 64-bit microseconds
     from `esp_timer_get_time()` (`int64_t`) rather than 32-bit FreeRTOS tick counters that wrap at ~497 days (`I-65`).
   - Cross-parameter Kconfig constraints (e.g., `min_hold < max_hold < cancel_after`, `admin_code_len >= 8`, LED step
-    $\ge \text{tick}$) MUST be enforced at compile time using `_Static_assert` in a shared header (`I-66`).
+    $\ge \text{tick}$) MUST be enforced at compile time using C23 `static_assert` in a shared header (`I-66`).
+- **Task Communication:** Flags set in one task or callback and consumed in another are C11 `_Atomic` (consume with
+  `atomic_exchange`); multi-field state stays under its mutex or `portMUX` (relay state); work handed to another
+  task goes through a FreeRTOS queue (panel ring requests: queue of 4, a full queue drops the request with a log and
+  the error LED). Do not add `volatile` for synchronization.
 - **Task Watchdog (TWDT) Architecture (`I-46`):**
   - `CONFIG_ESP_TASK_WDT_PANIC=y`, timeout `5 s` (default).
   - Every task subscribed to TWDT MUST use bounded blocking calls (e.g., `SO_RCVTIMEO` $\le 2\text{ s}$) and feed the
@@ -247,14 +278,15 @@ Normative companion specifications:
   5. `CONFIG_DOORBELL_WIFI_STA_11B_ONLY=y` (ESP-IDF default protocol is 802.11b/g/n): the station interface runs
      `esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B)` so links use the low-SNR DSSS/CCK rates for longer
      reach. The building AP must accept 802.11b clients (no "disable 802.11b" / minimum basic rate > 11 Mbps).
-  6. Flasher **Production** profile builds with `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`); the **Development**
-     profile keeps the ESP-IDF default `-Og`. The `-Og` panel app fills 91.6 % of the 1 MB factory partition.
+  6. `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`, ESP-IDF default `-Og`) in both `sdkconfig.defaults`: the `-Og`
+     panel app filled ~92 % of the 1 MB factory partition. The flasher has two profiles, **Production** (unlocked) and
+     **Burn**; the former Development (`-Og`) profile was removed (2026-11-10).
      Assertions stay enabled in both. The Production profile does not burn eFuses.
   7. Flasher **Burn** profile = Production `-Os` + the overlay `firmware/sdkconfig.burn` (Secure Boot v2 RSA-3072,
      release flash encryption, UART ROM download mode permanently disabled, NVS encryption with the flash-encryption
      key scheme, `CONFIG_ESP32_REV_MIN_3`) and the partition table `firmware/partitions_burn.csv` (table at
      `0x10000`, `nvs`, encrypted `nvs_keys`, factory app at `0x20000`). It builds in `firmware/<role>/build_burn/`
-     and never touches the Development / Production build state. ADR 0015.
+     and never touches the Production build state. ADR 0015.
 
 ---
 
@@ -278,17 +310,17 @@ finalized:
      re-sends `OPEN_DOOR_REQ` echoing the challenge within the same button press (`docs/protocol.md` §3.1). This
      eliminates both post-reboot replay and withheld-packet replay with zero NVS wear.
 4. **`I-3` & `I-5` — Two-Device Hardware Scope & Unique Factory Codes (Accepted Physical Scope):**
-   - The two-device hardware architecture (door relay on Panel GPIO 23, hidden code-reset button on Panel GPIO 19, no
+   - The two-device hardware architecture (door relay on Panel GPIO 23, hidden factory-reset button on Panel GPIO 19, no
      third indoor relay controller or tamper switch GPIO) is fixed and recorded as an accepted physical enclosure
      boundary. Factory user and admin codes printed on each panel's label MUST be generated randomly per device during
      initial factory provisioning (never a shared static code across devices).
 5. **`I-2`, `I-16`, `I-17` — Offline Operation, No OTA, Unencrypted Flash/NVS (Accepted Architectural Scope):**
-   - **Development profile:** in accordance with ADR 0013 (offline system, no OTA, UART re-flash), Release-mode Flash
+   - **Production profile:** in accordance with [ADR 0013](docs/adr/0013-offline-operation-no-ota.md) (offline system, no OTA, UART re-flash), Release-mode Flash
      Encryption, NVS Encryption, and Secure Boot v2 remain disabled (ESP-IDF defaults).
-   - **Production profile:** superseded by [ADR 0015](docs/adr/0015-production-security-hardening.md) (Accepted,
-     Option B) and implemented as the flasher **Burn** profile: Secure Boot v2 (RSA), release-mode flash encryption
-     and NVS encryption, **no field updates**; no stored signing key (each Burn build signs with a one-time key and destroys it). The Production profile itself
-     stays unhardened for bench testing of the release build. First hardware run: ADR 0015 §6.
+   - **Burn profile:** [ADR 0015](docs/adr/0015-production-security-hardening.md) (Accepted, Option B): Secure Boot
+     v2 (RSA), release-mode flash encryption and NVS encryption, **no field updates**; no stored signing key (each Burn
+     build signs with a one-time key and destroys it). The Production profile stays unhardened for bench testing of
+     the release build and for re-flashable installations. First hardware run: ADR 0015 §6.
 6. **`I-6`, `I-19`, `I-44` — Shared 4-Digit User Code & Lockout Policy (Accepted Product Scope):**
    - The single building-wide 4-digit user code (`I-6`), reset-on-success lockout behavior (`I-19`), and shared `*`-prefix
      keypad lockout counter (`I-44`) are intentionally retained to preserve the exact end-user behavior specified in
