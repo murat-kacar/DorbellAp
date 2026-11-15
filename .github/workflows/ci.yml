@@ -9,8 +9,8 @@ on:
 jobs:
   firmware:
     name: Build ${{ matrix.project }} (esp32, Production defaults)
-    runs-on: ubuntu-latest
-    container: espressif/idf:v6.1
+    runs-on: ubuntu-26.04
+    container: espressif/idf:v6.1.1
     strategy:
       fail-fast: false
       matrix:
@@ -28,8 +28,8 @@ jobs:
   # flasher's own signing code and verifies the resolved security options, the layout and the merged image's signatures.
   firmware-burn:
     name: Build ${{ matrix.project }} (esp32, Burn profile)
-    runs-on: ubuntu-latest
-    container: espressif/idf:v6.1
+    runs-on: ubuntu-26.04
+    container: espressif/idf:v6.1.1
     strategy:
       fail-fast: false
       matrix:
@@ -51,8 +51,8 @@ jobs:
 
   host-unit:
     name: Host unit tests (linux target)
-    runs-on: ubuntu-latest
-    container: espressif/idf:v6.1
+    runs-on: ubuntu-26.04
+    container: espressif/idf:v6.1.1
     steps:
       - uses: actions/checkout@v7
       - name: Build and run test/host_unit
@@ -66,13 +66,13 @@ jobs:
 
   python:
     name: Protocol vectors and Python lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: pip install cryptography ruff==0.17.4
+          python-version: "3.14"
+      - run: pip install cryptography ruff==0.17.5
       - run: python tools/verify_protocol_vectors.py
       - run: ruff check flasher tools
       - run: ruff format --check flasher tools
@@ -80,11 +80,11 @@ jobs:
   # C formatting with the ESP-IDF astyle rules (.pre-commit-config.yaml, tools/astyle-rules.yml)
   c-style:
     name: C formatting (astyle)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - run: pip install pre-commit
       - run: pre-commit run astyle_py --all-files --show-diff-on-failure
