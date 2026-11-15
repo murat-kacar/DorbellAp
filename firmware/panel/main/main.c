@@ -142,7 +142,7 @@ void panel_action_ring_apartment_locked(uint8_t apt_no)
 {
     PANEL_ASSERT_LOCKED();
     if (!apt_registered_locked(apt_no)) {
-        /* No registered apartment under this number: 1 s fast blink (kullanim-kilavuzu.md §2) */
+        /* No registered apartment under this number: 1 s fast blink (kullanim-kilavuzu.md §2.1) */
         doorbell_led_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -227,7 +227,7 @@ static void execute_pending_panel_actions(void)
         panel_pairing_abort_locked(false);
         panel_portal_stop();
         /* Building reset erases apartment registrations and keys only; user/admin codes and building Wi-Fi
-         * credentials are preserved (kullanim-kilavuzu.md §6.3) */
+         * credentials are preserved (kullanim-kilavuzu.md §3.6) */
         esp_err_t err = doorbell_storage_panel_erase_all_apts(CONFIG_DOORBELL_PANEL_MIN_APT_NO,
                                                               CONFIG_DOORBELL_PANEL_MAX_APT_NO);
         memset(g_apt_slots, 0, sizeof(g_apt_slots));

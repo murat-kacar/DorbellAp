@@ -354,7 +354,7 @@ Finalized product-level and security-scope architecture decisions:
 8. **Out of Project Scope:**
    - **Building Wi-Fi credential rotation:** No credential-push mechanism. If the building AP SSID/passphrase
      changes, either keep the old SSID/passphrase on the new AP or reset and re-pair every module
-     ([kullanim-kilavuzu.md](kullanim-kilavuzu.md) §4.2).
+     ([kullanim-kilavuzu.md](kullanim-kilavuzu.md) §3.3).
    - **Event log / time source:** No persistent audit log and no real-time clock or SNTP; events are reported
      only on the panel serial monitor.
    - **Visitor UX / accessibility:** No audible feedback (no buzzer hardware), no ring rate limiting, and no

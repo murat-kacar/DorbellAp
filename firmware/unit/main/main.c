@@ -181,7 +181,7 @@ static void on_net_state_changed(bool connected, uint32_t ipv4_host, void *ctx)
 
 static void execute_unit_reset(void)
 {
-    ESP_LOGI(TAG, "Resetting apartment module pairing state and restarting (kullanim-kilavuzu.md §6.2)");
+    ESP_LOGI(TAG, "Resetting apartment module pairing state and restarting (kullanim-kilavuzu.md §3.5)");
     doorbell_net_disconnect_sta();
     unit_lock();
     doorbell_storage_unit_erase();
