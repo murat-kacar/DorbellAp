@@ -8,6 +8,9 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 - Bazı varsayılanlar henüz tezgahta veya sahada doğrulanmadı; bunlar "ölçülecek" diye işaretlidir.
 - **Doorbell network** menüsündeki ortak ayarlar (`UDP port`, `Heartbeat interval` vb.) panelde ve tüm daire
   modüllerinde **aynı** olmalıdır (panel ayrıca eşleştirme sırasında `Heartbeat interval` değerini modüle aktarır).
+- Ortak ayarlar `components/doorbell_common/Kconfig.projbuild`, panele ve modüle özel ayarlar ise
+  `firmware/panel/main/Kconfig.projbuild` ve `firmware/unit/main/Kconfig.projbuild` dosyalarında tanımlıdır; form
+  her cihaz için yalnızca o cihazın ayarlarını gösterir.
 - İmkânsız bir kombinasyon (örneğin en kısa süre en uzundan büyük veya yönetici şifresi 8 haneden kısa) derleme
   sırasında (`_Static_assert` ile) hata verir.
 
@@ -54,9 +57,8 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
 | Application ACK timeout | 400 ms | Zil, kapı açma veya durum raporu gönderildikten sonra "aldım" cevabının (ACK) her denemede ne kadar bekleneceği (±25 ms rastgele sapma ile). Masada ve sahada doğrulandı. Panel ve modülde **aynı** olmalıdır (Flasher farklıysa derlemeyi durdurur). |
-| Pairing window | 20 s | Panelin eşleşmemiş modülü yakalama (keşif) penceresi süresi. |
 | Pairing completion timeout | 10 s | Modül yakalandıktan sonra bina erişim noktasına (AP) bağlanıp DHCP'den IP alarak son onayı (`PAIR_COMPLETE`) göndermesi için tanınan ek tamamlama süresi. En az `5 s + 4 × ACK timeout + 0,5 s` olmalıdır (400 ms ile 7,1 s); daha kısaysa derleme hata verir. Panel ve modülde **aynı** olmalıdır. |
-| Replay counter NVS block size | 100 | Mesaj sayacının flash'a kaç mesajda bir önceden резерв edilerek (write-ahead) yazıldığı. |
+| Replay counter NVS block size | 100 | Mesaj sayacının flash'a kaç mesajda bir önceden ayrılarak (write-ahead) yazıldığı. |
 | Module health reports (heartbeat) | Açık | Her modül belirli aralıklarla panele onaylı durum raporu gönderir; panel her raporu loglar ve `ACK` döner. Kapatılırsa "no report" uyarıları, sessizlikte yeniden başlatma ve modülün "panele ulaşılamıyor" LED uyarısı devre dışı kalır. |
 | Heartbeat interval | 300 s | İki rapor arasındaki süre (±%10 rastgele sapma ile; elektrik kesintisi dönüşünde ilk rapor `[5 s .. Heartbeat interval]` arasında rastgele gecikmeyle gönderilir). |
 
@@ -157,6 +159,7 @@ seviyeyi sıfırlar.
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
+| Pairing window | 20 s | Panelin eşleşmemiş modülü yakalama (keşif) penceresi süresi. |
 | RING retries without ACK | 2 | Cevap gelmezse zilin kaç kez daha gönderileceği. 2 ise toplam 3 gönderim yapılır. |
 | Restart the panel when no module reports | Açık | En az bir daire kayıtlıyken hiçbir modülden 3 heartbeat aralığı boyunca rapor gelmezse panel kendini yeniden başlatır. Heartbeat kapalıysa bu ayar görünmez. |
 
@@ -202,6 +205,7 @@ dakika, 1 saat, 2 saat … ve en fazla 48 saat. İlk doğrulanmış rapor geldi�
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
+| HEARTBEAT retries without ACK | 1 | Panelden `HEARTBEAT_ACK` gelmezse durum raporunun kaç kez daha gönderileceği. 1 ise toplam 2 gönderim yapılır. Heartbeat kapalıysa bu ayar görünmez. |
 | OPEN_DOOR retries without ACK | 1 | Cevap gelmezse kapı açma isteğinin kaç kez daha gönderileceği. 1 ise toplam 2 gönderim yapılır. |
 
 ---
