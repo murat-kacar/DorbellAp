@@ -144,7 +144,7 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
 1. **Panelde:** `* <yönetici> * 1 * <daire no> #` yazın.
    Panel LED'i tekrarlayan çift flaş yapar; 20 saniyelik eşleştirme penceresi açılır (iptal için `* #`).
 2. **Modülde (panelin yanında):** Gizli **eşleştirme butonunu** basılı tutun.
-   - 7. saniyede LED orta hızda yanıp sönmeye başlar. **Bu sırada bırakın** (7–12 saniye arası).
+   - 7\. saniyede LED orta hızda yanıp sönmeye başlar. **Bu sırada bırakın** (7–12 saniye arası).
    - 12 saniyeyi geçerse LED söner ve bırakmak işe yaramaz; 15 saniyede LED üçlü flaş yapar ve işlem iptal olur.
    - Bıraktığınızda LED yavaş (1 Hz) yanıp söner: modül panelin eşleştirme ağına (`Doorbell-Pair-XXXX`) bağlanıp bina
      Wi-Fi bilgisini ve şifreleme anahtarını alır, ardından bina erişim noktasına (AP) bağlanarak eşleştirmeyi
@@ -187,12 +187,11 @@ arada kısa söner; bu sırada bırakın). Panel, yüklendiği (flaşlandığı)
 - Yanlış şifre kilidi kalkar.
 - **Bütün daire kayıtları silinir.** Daire modüllerinin sıfırlanıp (6.2) yeniden eşleştirilmesi gerekir (bölüm 5).
 
-
 ### 6.2. Daire modülü sıfırlama
 
 Modüldeki gizli **sıfırlama butonunu** **7–12 saniye** basılı tutup bırakın.
 
-- 7. saniyede LED sabit yanmaya başlar (arada kısa söner). **Bu sırada bırakın** (7–12 saniye arası); 15 saniyede
+- 7\. saniyede LED sabit yanmaya başlar (arada kısa söner). **Bu sırada bırakın** (7–12 saniye arası); 15 saniyede
   LED üçlü flaş yapar ve işlem iptal olur.
 - Modülün eşleştirme ve Wi-Fi bilgileri silinir, modül yeniden başlar ve eşleşmemiş duruma döner.
 - Paneldeki daire kaydı silinmez. Aynı daire numarasıyla yeniden eşleştirmek için önce panelden kaydı silin

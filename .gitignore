@@ -4,7 +4,8 @@ build_burn/
 managed_components/
 sdkconfig
 sdkconfig.old
-# sdkconfig.defaults and dependencies.lock stay tracked (not matched by the rules above)
+sdkconfig.flasher
+# sdkconfig.defaults, sdkconfig.burn, and dependencies.lock stay tracked
 
 # Flasher GUI build outputs (merged firmware + build-info sidecars)
 flasher/builds/*.bin
@@ -14,24 +15,25 @@ flasher/builds/*.json
 # graphify knowledge-graph output (regenerate with: graphify update .)
 graphify-out/
 
-# Machine-local assistant settings (graphify hooks use an absolute graphify.exe path)
-.claude/settings.local.json
+# Machine-local assistant settings and caches (.agents/ and .cursor/ stay tracked)
+.claude/
 .codex/
-.gemini/settings.json
+.gemini/
 
-# Secrets (API keys, Wi-Fi credentials) must never be committed
+# Secrets and offline Secure Boot signing keys (ADR 0015) must never be committed
 .env
 .env.*
+*.pem
 
-# OS, Python & editor files
+# Python, tooling, OS, and editor artifacts
 __pycache__/
 *.py[cod]
+.ruff_cache/
+.pytest_cache/
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 .vscode/
 .idea/
-
-# Secure Boot signing keys are kept offline by the owner (ADR 0015) and must never be committed
-*.pem
+*.code-workspace
