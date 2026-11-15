@@ -16,7 +16,7 @@ jobs:
       matrix:
         project: [firmware/panel, firmware/unit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         shell: bash
         run: |
@@ -35,7 +35,7 @@ jobs:
       matrix:
         project: [firmware/panel, firmware/unit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build with the Burn overlay
         shell: bash
         run: |
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     container: espressif/idf:v6.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and run test/host_unit
         shell: bash
         run: |
@@ -68,8 +68,8 @@ jobs:
     name: Protocol vectors and Python lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography ruff==0.17.4
@@ -82,8 +82,8 @@ jobs:
     name: C formatting (astyle)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install pre-commit
