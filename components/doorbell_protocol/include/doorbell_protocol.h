@@ -264,6 +264,8 @@ esp_err_t doorbell_frame_decrypt(const uint8_t *frame,
 /**
  * Accepted authenticated frame: advance @p rx_floor to @p rx_counter and adopt @p from_ipv4 as the peer
  * address if the authenticated @p sender_ipv4 matches it.
+ * @pre The caller has already rejected replays (@p rx_counter > *@p rx_floor); this function does not check it and
+ *      would move the floor backwards otherwise.
  * @return true when the record must be persisted now: the peer address changed, or the floor has advanced a whole
  *         write-ahead block since @p persisted_rx_floor
  */
