@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-FLASHER_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = FLASHER_DIR.parent
+from flasher_env import FLASHER_DIR, PROJECT_ROOT
+
 BUILDS_DIR = FLASHER_DIR / "builds"
 PANEL_FW_DIR = PROJECT_ROOT / "firmware" / "panel"
 UNIT_FW_DIR = PROJECT_ROOT / "firmware" / "unit"

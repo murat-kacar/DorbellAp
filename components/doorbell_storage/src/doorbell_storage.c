@@ -26,14 +26,15 @@ static_assert(sizeof(doorbell_panel_factory_wifi_blob_t) == 112, "factory_wifi b
 static_assert(sizeof(doorbell_panel_apt_blob_t) == 48,  "doorbell_panel_apt_blob_t must be 48 bytes");
 static_assert(sizeof(doorbell_unit_state_blob_t) == 152, "doorbell_unit_state_blob_t must be 152 bytes");
 
-/* Common record frame used by blob_load() / blob_save(): magic at 0, version at 4, crc32 as the last member */
-typedef struct {
-    uint32_t magic;
-    uint16_t version;
-} blob_head_t;
+/* Common record frame used by blob_load() / blob_save(): uint32_t magic at 0, uint16_t version at 4, uint32_t crc32 as
+ * the last member. Only these 6 + 4 bytes are touched: bytes 6..7 already belong to the record (apt_no / registered,
+ * paired / apt_no), so a padded head struct must never be copied over them. */
+#define BLOB_MAGIC_OFFSET   0
+#define BLOB_VERSION_OFFSET 4
 
 #define ASSERT_BLOB_FRAME(type)                                                                      \
-    static_assert(offsetof(type, magic) == 0 && offsetof(type, version) == 4 &&                      \
+    static_assert(offsetof(type, magic) == BLOB_MAGIC_OFFSET && sizeof(((type *)0)->magic) == 4 &&   \
+                  offsetof(type, version) == BLOB_VERSION_OFFSET && sizeof(((type *)0)->version) == 2 && \
                   offsetof(type, crc32) == sizeof(type) - sizeof(uint32_t), #type " record frame")
 ASSERT_BLOB_FRAME(doorbell_panel_cfg_blob_t);
 ASSERT_BLOB_FRAME(doorbell_panel_factory_wifi_blob_t);
@@ -71,11 +72,13 @@ static esp_err_t blob_load(const char *key, void *blob, size_t size, uint32_t ma
         }
     }
     if (err == ESP_OK) {
-        blob_head_t head;
+        uint32_t stored_magic;
+        uint16_t stored_version;
         uint32_t stored_crc;
-        memcpy(&head, blob, sizeof(head));
+        memcpy(&stored_magic, (const uint8_t *)blob + BLOB_MAGIC_OFFSET, sizeof(stored_magic));
+        memcpy(&stored_version, (const uint8_t *)blob + BLOB_VERSION_OFFSET, sizeof(stored_version));
         memcpy(&stored_crc, (const uint8_t *)blob + size - sizeof(stored_crc), sizeof(stored_crc));
-        if (head.magic != magic || head.version != BLOB_VERSION || stored_crc != blob_crc(blob, size)) {
+        if (stored_magic != magic || stored_version != BLOB_VERSION || stored_crc != blob_crc(blob, size)) {
             err = ESP_ERR_INVALID_CRC;
         }
     }
@@ -91,8 +94,9 @@ static esp_err_t blob_load(const char *key, void *blob, size_t size, uint32_t ma
 /* Stamp magic, version and CRC into @p blob and commit it as one NVS key (atomic per key, I-50) */
 static esp_err_t blob_save(const char *key, void *blob, size_t size, uint32_t magic)
 {
-    blob_head_t head = {.magic = magic, .version = BLOB_VERSION};
-    memcpy(blob, &head, sizeof(head));
+    const uint16_t version = BLOB_VERSION;
+    memcpy((uint8_t *)blob + BLOB_MAGIC_OFFSET, &magic, sizeof(magic));
+    memcpy((uint8_t *)blob + BLOB_VERSION_OFFSET, &version, sizeof(version));
     uint32_t crc = blob_crc(blob, size);
     memcpy((uint8_t *)blob + size - sizeof(crc), &crc, sizeof(crc));
 

@@ -503,6 +503,9 @@ TEST_CASE("storage: apartment records and the write-ahead tx counter", "[storage
     doorbell_panel_apt_blob_t back;
     TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_apt(5, &back));
     TEST_ASSERT_EQUAL_UINT32(110, back.tx_counter_ceiling); /* the reservation is in NVS before counter 11 is used */
+    /* The record frame (magic, version, CRC) never overwrites the record's own fields */
+    TEST_ASSERT_EQUAL(5, back.apt_no);
+    TEST_ASSERT_EQUAL(1, back.registered);
 
     /* Exhausted counter space is refused */
     runtime = DOORBELL_COUNTER_MAX_VALID;
@@ -516,6 +519,32 @@ TEST_CASE("storage: apartment records and the write-ahead tx counter", "[storage
     TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_erase_all_apts(1, 99));
     TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_panel_load_apt(5, &back));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, doorbell_storage_panel_erase_all_apts(1, 255));
+}
+
+TEST_CASE("storage: apartment module state round trip keeps every field", "[storage]")
+{
+    doorbell_unit_state_blob_t st = {
+        .paired = 1,
+        .apt_no = 7,
+        .panel_mac = {1, 2, 3, 4, 5, 6},
+        .ap_channel = 6,
+        .wifi_ssid = "Bina AP",
+        .wifi_pass = "password123",
+        .panel_ipv4 = 0xC0A80101,
+        .heartbeat_interval_s = 300,
+        .tx_counter_ceiling = 100,
+        .rx_floor = 3,
+    };
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_unit_save(&st));
+    doorbell_unit_state_blob_t back;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_unit_load(&back));
+    TEST_ASSERT_EQUAL(1, back.paired);
+    TEST_ASSERT_EQUAL(7, back.apt_no);
+    TEST_ASSERT_EQUAL_MEMORY(st.panel_mac, back.panel_mac, sizeof(st.panel_mac));
+    TEST_ASSERT_EQUAL_STRING("Bina AP", back.wifi_ssid);
+    TEST_ASSERT_EQUAL_UINT32(3, back.rx_floor);
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_unit_erase());
+    TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_unit_load(&back));
 }
 
 /* One test case: a corrupt panel_cfg write-protects the record for the rest of the process */

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 FLASHER_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = FLASHER_DIR.parent
 if str(FLASHER_DIR) not in sys.path:
     sys.path.insert(0, str(FLASHER_DIR))
 

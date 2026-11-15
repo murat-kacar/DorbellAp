@@ -18,7 +18,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 
-from flasher_config import PROJECT_ROOT
+# flasher_env (stdlib only), not flasher_config: importing this module must not need esp_kconfiglib (CI Python checks)
+from flasher_env import PROJECT_ROOT
 
 # panel_cfg NVS record packer, shared with tools/verify_protocol_vectors.py
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
