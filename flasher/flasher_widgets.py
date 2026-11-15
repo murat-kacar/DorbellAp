@@ -17,7 +17,13 @@ import serial
 import serial.tools.list_ports
 
 from flasher_config import BUILDS_DIR, PROJECT_ROOT, escape_quoted, strip_ansi
-from flasher_images import BURN_CONFIRM_WORD, generate_random_digits, inspect_firmware_image, read_build_info
+from flasher_images import (
+    BURN_CONFIRM_WORD,
+    generate_random_digits,
+    inspect_firmware_image,
+    read_build_info,
+    validate_wifi_credentials,
+)
 
 if TYPE_CHECKING:
     from flasher_gui import DoorbellFlasherApp
@@ -175,17 +181,9 @@ class SerialMonitorWindow(tk.Toplevel):
         if not admin.isdigit() or not (8 <= len(admin) <= 10):
             messagebox.showerror("Invalid Admin Code", "Admin code must be 8-10 digits.", parent=self)
             return
-        if any(ch in ssid or ch in pw for ch in ("\x00", "\r", "\n")):
-            messagebox.showerror("Invalid Wi-Fi", "SSID and password cannot contain control characters.", parent=self)
-            return
-        ssid_bytes = len(ssid.encode("utf-8"))
-        pw_bytes = len(pw.encode("utf-8"))
-        if ssid_bytes == 0 or ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
-            messagebox.showerror(
-                "Invalid Wi-Fi",
-                "SSID must be 1-32 UTF-8 bytes; password must be empty or 8-63 UTF-8 bytes.",
-                parent=self,
-            )
+        err = validate_wifi_credentials(ssid, pw, allow_empty_ssid=False)
+        if err:
+            messagebox.showerror("Invalid Wi-Fi", err, parent=self)
             return
         if self._ser and self._ser.is_open:
             try:
@@ -623,16 +621,9 @@ class DeviceCard(ttk.LabelFrame):
         if user_code == admin_code:
             messagebox.showerror("Invalid Codes", "User code and Admin code cannot be identical.")
             return None
-        if "\x00" in ssid or "\x00" in pw:
-            messagebox.showerror("Invalid Wi-Fi Credentials", "SSID and password cannot contain null bytes.")
-            return None
-        ssid_bytes = len(ssid.encode("utf-8"))
-        pw_bytes = len(pw.encode("utf-8"))
-        if ssid_bytes > 32 or (pw and (pw_bytes < 8 or pw_bytes > 63)):
-            messagebox.showerror(
-                "Invalid Wi-Fi Credentials",
-                "Wi-Fi SSID must be 0-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes.",
-            )
+        err = validate_wifi_credentials(ssid, pw, allow_empty_ssid=True)
+        if err:
+            messagebox.showerror("Invalid Wi-Fi Credentials", err)
             return None
         return admin_code, user_code, ssid, pw
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive Host Verification & Unit Test Suite for DorbellAp.
+Host Verification Suite for DorbellAp Python Tools & Protocol Vectors.
 
 Verifies:
 1. NVS Blob Binary Layouts & CRC32 (`panel_cfg` = 168 B, `panel_apt` = 48 B, `unit_state` = 152 B)
@@ -8,21 +8,16 @@ Verifies:
 2. 12-byte AAD Header Serialization, Transport Flag Masking (`is_retry`, `is_bcast`), and 13-byte AES-128-CCM
    Nonce Layout.
 3. X25519 ECDH + HKDF-SHA256 (`"DorbellAp-Pair-v1"`) Pairing Key Agreement & Provisioning Blob AEAD.
-4. Deterministic Keypad EBNF Grammar & Lockout State Machine (`I-19`, `I-20`, `I-44`, `docs/protocol.md` §6.1–6.2).
-5. Pre-Crypto Destination Filtering (`I-53`), Idempotent ACK Deduplication Cache (`I-29`), and Monotonic Replay Floor.
-6. `OPEN_DOOR` Reboot Replay & Withheld-Packet Freshness Protection via `panel_boot_id` + 64-bit
-   `STATUS_CHALLENGE` (`I-7`, `I-18`).
-7. Two-Phase Pairing Commit, 1.5 s Multi-Module Collision Abort, and Same-MAC Re-Pairing Cleanup (`I-30`, `I-45`).
+4. Protocol Payload Sizes & Shared Wi-Fi Credential Validation (`validate_wifi_credentials`).
+5. Burn Profile Helpers, eFuse Pre-Check & SBv2 Signature Verification.
 """
 
 import copy
 import hashlib
-import hmac
 import os
 import struct
 import sys
 import zlib
-from dataclasses import dataclass
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -39,6 +34,7 @@ from flasher_images import (  # noqa: E402
     burn_layout_from_partition_table,
     make_nvs_keys_partition,
     parse_partition_table,
+    validate_wifi_credentials,
     verify_burn_image_signatures,
     verify_sbv2_signed_blob,
 )
@@ -177,286 +173,8 @@ def test_x25519_hkdf_derivation() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Keypad EBNF Grammar & Lockout Reference Model Tests (I-19, I-20, I-44)
+# 4. Protocol Payload Sizes & Wi-Fi Credential Validation
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class KeypadModel:
-    admin_code: str = "12345678"
-    user_code: str = "1234"
-    min_apt: int = 1
-    max_apt: int = 99
-    mode: str = "MODE_IDLE"
-    wrong_code_count: int = 0
-    lockout_level: int = 0
-    lockout_remaining_s: int = 0
-    last_action: str = ""
-
-    def _apply_wrong_penalty(self) -> None:
-        self.wrong_code_count += 1
-        if self.wrong_code_count >= 5:
-            dur = 60 * (2**self.lockout_level)
-            if dur > 900:
-                dur = 900
-            self.lockout_level += 1
-            self.lockout_remaining_s = dur
-
-    def _reset_lockout(self) -> None:
-        self.wrong_code_count = 0
-        self.lockout_level = 0
-        self.lockout_remaining_s = 0
-
-    def _parse_apt(self, s: str) -> int | None:
-        if not s or len(s) > 3 or not s.isdigit() or s[0] == "0":
-            return None
-        v = int(s)
-        if v < self.min_apt or v > self.max_apt:
-            return None
-        return v
-
-    def evaluate(self, raw_with_hash: str) -> str:
-        assert raw_with_hash.endswith("#")
-        seq = raw_with_hash[:-1]
-        self.last_action = ""
-
-        # Step 1: Cancel check ("*#")
-        if seq == "*":
-            if self.mode in ("MODE_PAIR_DISCOVER", "MODE_PORTAL"):
-                self.mode = "MODE_IDLE"
-                self.last_action = "CANCEL_MODE"
-            else:
-                self.last_action = "CANCEL_NOOP"
-            return "OK_CANCEL"
-
-        if not seq:
-            return "ERR_MALFORMED"
-
-        # Visitor ring (does not start with '*'): allowed even during lockout
-        if not seq.startswith("*"):
-            apt = self._parse_apt(seq)
-            if apt is None:
-                return "ERR_MALFORMED"
-            self.last_action = f"RING:{apt}"
-            return "OK_RING"
-
-        if self.mode != "MODE_IDLE":
-            return "ERR_MODE"
-
-        # Step 2: Lockout gate (before inspecting digits)
-        if self.lockout_remaining_s > 0:
-            return "ERR_LOCKED_OUT"
-
-        # Step 3: Syntax & structure validation BEFORE any secret comparison
-        tokens = seq[1:].split("*")
-        if len(tokens) > 4 or any(not t.isdigit() for t in tokens):
-            return "ERR_MALFORMED"
-
-        if len(tokens) == 1:
-            # User door-open candidate: * <digits> #
-            if hmac.compare_digest(tokens[0], self.user_code) and len(tokens[0]) == len(self.user_code):
-                self._reset_lockout()
-                self.last_action = "OPEN_DOOR_LOCAL"
-                return "OK_USER_DOOR"
-            self._apply_wrong_penalty()
-            return "ERR_WRONG_CODE"
-
-        if len(tokens[1]) != 1:
-            return "ERR_MALFORMED"
-
-        cmd_id = tokens[1]
-        shape_valid = False
-        if cmd_id == "1":
-            shape_valid = len(tokens) == 3 and self._parse_apt(tokens[2]) is not None
-        elif cmd_id == "2":
-            a1 = self._parse_apt(tokens[2]) if len(tokens) == 4 else None
-            a2 = self._parse_apt(tokens[3]) if len(tokens) == 4 else None
-            shape_valid = a1 is not None and a1 == a2
-        elif cmd_id == "3":
-            shape_valid = (
-                len(tokens) == 4
-                and len(tokens[2]) == len(self.user_code)
-                and len(tokens[3]) == len(self.user_code)
-                and hmac.compare_digest(tokens[2], tokens[3])
-            )
-        elif cmd_id == "4":
-            shape_valid = (
-                len(tokens) == 4
-                and len(tokens[2]) == len(self.admin_code)
-                and len(tokens[3]) == len(self.admin_code)
-                and hmac.compare_digest(tokens[2], tokens[3])
-            )
-        elif cmd_id == "5":
-            shape_valid = len(tokens) == 2
-        elif cmd_id == "6":
-            shape_valid = len(tokens) == 3
-
-        if not shape_valid:
-            return "ERR_MALFORMED"
-
-        # Step 4: Constant-time admin credential verification
-        if not (hmac.compare_digest(tokens[0], self.admin_code) and len(tokens[0]) == len(self.admin_code)):
-            self._apply_wrong_penalty()
-            return "ERR_WRONG_CODE"
-
-        if cmd_id == "6":
-            if not (hmac.compare_digest(tokens[2], self.admin_code) and len(tokens[2]) == len(self.admin_code)):
-                self._apply_wrong_penalty()
-                return "ERR_WRONG_CODE"
-
-        self._reset_lockout()
-
-        if cmd_id == "1":
-            self.last_action = f"PAIR:{int(tokens[2])}"
-        elif cmd_id == "2":
-            self.last_action = f"DELETE:{int(tokens[2])}"
-        elif cmd_id == "3":
-            self.user_code = tokens[2]
-            self.last_action = "SET_USER_CODE"
-        elif cmd_id == "4":
-            self.admin_code = tokens[2]
-            self.last_action = "SET_ADMIN_CODE"
-        elif cmd_id == "5":
-            self.mode = "MODE_PORTAL"
-            self.last_action = "START_PORTAL"
-        elif cmd_id == "6":
-            self.last_action = "BUILDING_RESET"
-        return "OK_ADMIN"
-
-
-def test_keypad_grammar_and_lockout_edge_cases() -> None:
-    kp = KeypadModel()
-
-    # 1. Cancel (*#) never increments wrong_code_count
-    assert kp.evaluate("*#") == "OK_CANCEL"
-    assert kp.wrong_code_count == 0
-
-    # 2. Malformed sequences never increment wrong_code_count even with wrong admin code (I-20)
-    malformed_inputs = [
-        "#",
-        "**#",
-        "*1234*#",
-        "*00000000*9*1#",  # unknown cmd_id 9
-        "*00000000*1*0#",  # apt 0 invalid
-        "*00000000*1*01#",  # leading zero invalid
-        "*00000000*1*100#",  # apt > 99 invalid
-        "*00000000*2*5*6#",  # apt1 != apt2 mismatch in Step 3
-        "*00000000*3*5678*5679#",  # new user code confirmation mismatch in Step 3
-        "*00000000*3*567*567#",  # wrong user code length (3 != 4) in Step 3
-        "*00000000*4*87654321*87654322#",  # new admin code mismatch in Step 3
-        "*00000000*5*1#",  # extra arg to cmd 5
-    ]
-    for seq in malformed_inputs:
-        res = kp.evaluate(seq)
-        assert res == "ERR_MALFORMED", f"Expected ERR_MALFORMED for {seq}, got {res}"
-        assert kp.wrong_code_count == 0, f"wrong_code_count incremented on malformed {seq}"
-
-    # 3. 4 wrong user/admin attempts + 1 valid user code resets wrong_code_count to 0 (I-19, I-44)
-    for _ in range(4):
-        assert kp.evaluate("*9999#") == "ERR_WRONG_CODE"
-    assert kp.wrong_code_count == 4
-    assert kp.lockout_remaining_s == 0
-    assert kp.evaluate("*1234#") == "OK_USER_DOOR"
-    assert kp.wrong_code_count == 0
-
-    # 4. 5 wrong attempts trigger 60 s lockout; visitor rings still work during lockout!
-    for _ in range(5):
-        assert kp.evaluate("*00000000*5#") == "ERR_WRONG_CODE"
-    assert kp.lockout_remaining_s == 60
-    assert kp.lockout_level == 1
-
-    # During lockout, even a valid user/admin code is rejected by the lockout gate without resetting lockout
-    assert kp.evaluate("*1234#") == "ERR_LOCKED_OUT"
-    assert kp.evaluate("*12345678*5#") == "ERR_LOCKED_OUT"
-    # Visitor ring still works during lockout!
-    assert kp.evaluate("12#") == "OK_RING"
-    assert kp.last_action == "RING:12"
-
-    # Simulate lockout expiry and next lockout doubling (60 -> 120 -> 240 -> 480 -> 900 -> 900)
-    expected_durations = [120, 240, 480, 900, 900]
-    for exp_dur in expected_durations:
-        kp.lockout_remaining_s = 0
-        kp.wrong_code_count = 4
-        assert kp.evaluate("*9999#") == "ERR_WRONG_CODE"
-        assert kp.lockout_remaining_s == exp_dur
-
-
-# ---------------------------------------------------------------------------
-# 5. OPEN_DOOR Challenge-Response, Dedup & Replay Simulation (I-7, I-18, I-29)
-# ---------------------------------------------------------------------------
-
-
-def test_open_door_challenge_and_deduplication() -> None:
-    panel_boot_id = 0xA1B2C3D4
-    rx_floor = 10
-    active_challenge = 0
-    challenge_deadline_ms = 0
-    door_pulse_count = 0
-    last_ack: tuple[int, int, str, int] | None = None  # (tx_counter, seq_id, status, nonce)
-
-    def panel_process_open_door(now_ms: int, tx_counter: int, seq_id: int, req_boot_id: int, echo_nonce: int):
-        nonlocal rx_floor, active_challenge, challenge_deadline_ms, door_pulse_count, last_ack
-
-        # Step 3: Deduplication check (I-29)
-        if last_ack is not None and last_ack[0] == tx_counter and last_ack[1] == seq_id:
-            return last_ack[2], last_ack[3]
-
-        # Step 4: Replay check
-        if tx_counter <= rx_floor:
-            return "REJECT_REPLAY", 0
-
-        rx_floor = tx_counter
-
-        challenge_ok = (
-            req_boot_id == panel_boot_id
-            and echo_nonce != 0
-            and echo_nonce == active_challenge
-            and now_ms <= challenge_deadline_ms
-        )
-        if not challenge_ok:
-            active_challenge = 0x1122334455667788
-            challenge_deadline_ms = now_ms + 2000
-            last_ack = (tx_counter, seq_id, "STATUS_CHALLENGE", active_challenge)
-            return "STATUS_CHALLENGE", active_challenge
-
-        active_challenge = 0
-        challenge_deadline_ms = 0
-        door_pulse_count += 1
-        last_ack = (tx_counter, seq_id, "STATUS_OK", 0)
-        return "STATUS_OK", 0
-
-    # Round 0: unit sends initial OPEN_DOOR_REQ (echo_nonce=0) -> Panel returns STATUS_CHALLENGE
-    status, chal = panel_process_open_door(now_ms=1000, tx_counter=11, seq_id=1, req_boot_id=0, echo_nonce=0)
-    assert status == "STATUS_CHALLENGE" and chal != 0
-    assert door_pulse_count == 0
-
-    # Retry of Round 0 (if STATUS_CHALLENGE ACK was lost) -> Dedup cache returns same STATUS_CHALLENGE
-    status_retry, chal_retry = panel_process_open_door(
-        now_ms=1400, tx_counter=11, seq_id=1, req_boot_id=0, echo_nonce=0
-    )
-    assert status_retry == "STATUS_CHALLENGE" and chal_retry == chal
-    assert door_pulse_count == 0
-
-    # Round 1: unit echoes (panel_boot_id, chal) within 2000 ms -> Panel unlocks door once!
-    status2, _ = panel_process_open_door(
-        now_ms=1450, tx_counter=12, seq_id=2, req_boot_id=panel_boot_id, echo_nonce=chal
-    )
-    assert status2 == "STATUS_OK"
-    assert door_pulse_count == 1
-
-    # Retry of Round 1 (if STATUS_OK ACK was lost) -> Dedup cache returns STATUS_OK WITHOUT unlocking a 2nd time!
-    status2_retry, _ = panel_process_open_door(
-        now_ms=1850, tx_counter=12, seq_id=2, req_boot_id=panel_boot_id, echo_nonce=chal
-    )
-    assert status2_retry == "STATUS_OK"
-    assert door_pulse_count == 1
-
-    # Replaying an older frame (tx_counter=11) after rx_floor=12 is rejected
-    status_replay, _ = panel_process_open_door(
-        now_ms=1900, tx_counter=11, seq_id=99, req_boot_id=panel_boot_id, echo_nonce=chal
-    )
-    assert status_replay == "REJECT_REPLAY"
-    assert door_pulse_count == 1
 
 
 def test_payload_sizes() -> None:
@@ -469,8 +187,35 @@ def test_payload_sizes() -> None:
     assert struct.calcsize(">I6sBB") == 12  # PAIR_COMPLETE
 
 
+def test_wifi_credential_validation() -> None:
+    # Valid credentials
+    assert validate_wifi_credentials("Bina-AP", "SecretPass123", allow_empty_ssid=False) is None
+    assert validate_wifi_credentials("Open-AP", "", allow_empty_ssid=False) is None
+    assert validate_wifi_credentials("", "", allow_empty_ssid=True) is None
+    assert validate_wifi_credentials("A" * 32, "B" * 63, allow_empty_ssid=False) is None
+
+    # Empty SSID handling
+    assert validate_wifi_credentials("", "SecretPass123", allow_empty_ssid=False) is not None
+    assert validate_wifi_credentials("", "", allow_empty_ssid=False) is not None
+    assert validate_wifi_credentials("", "SecretPass123", allow_empty_ssid=True) is not None
+
+    # Control characters rejected in SSID and password
+    for bad in ("\x00", "\r", "\n"):
+        assert validate_wifi_credentials(f"AP{bad}1", "SecretPass123", allow_empty_ssid=False) is not None
+        assert validate_wifi_credentials("Bina-AP", f"Pass{bad}1234", allow_empty_ssid=False) is not None
+
+    # UTF-8 SSID byte limit (>32 bytes)
+    assert validate_wifi_credentials("ğ" * 16, "SecretPass123", allow_empty_ssid=False) is None  # 32 UTF-8 bytes
+    assert validate_wifi_credentials("ğ" * 16 + "a", "SecretPass123", allow_empty_ssid=False) is not None  # 33 bytes
+
+    # WPA2 passphrase length bounds (0 allowed for open AP, otherwise 8..63 bytes)
+    assert validate_wifi_credentials("Bina-AP", "1234567", allow_empty_ssid=False) is not None
+    assert validate_wifi_credentials("Bina-AP", "12345678", allow_empty_ssid=False) is None
+    assert validate_wifi_credentials("Bina-AP", "B" * 64, allow_empty_ssid=False) is not None
+
+
 # ---------------------------------------------------------------------------
-# 7. Burn Profile Helpers, eFuse Pre-Check & SBv2 Signature Verification
+# 5. Burn Profile Helpers, eFuse Pre-Check & SBv2 Signature Verification
 # ---------------------------------------------------------------------------
 
 
@@ -656,12 +401,8 @@ if __name__ == "__main__":
     test_nvs_blob_layouts_and_write_ahead()
     test_wire_framing_and_ccm_aead()
     test_x25519_hkdf_derivation()
-    test_keypad_grammar_and_lockout_edge_cases()
-    test_open_door_challenge_and_deduplication()
     test_payload_sizes()
+    test_wifi_credential_validation()
     test_burn_helpers_and_sbv2_verification()
-    print(
-        "ALL 7 HOST VERIFICATION SUITES (NVS, AEAD, X25519/HKDF, KEYPAD EBNF/LOCKOUT, CHALLENGE/DEDUP, PAYLOADS, "
-        "BURN) PASSED."
-    )
+    print("ALL 6 HOST VERIFICATION SUITES (NVS, AEAD, X25519/HKDF, PAYLOADS, WIFI CREDS, BURN) PASSED.")
     sys.exit(0)

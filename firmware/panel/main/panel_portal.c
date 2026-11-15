@@ -335,9 +335,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
 
     /* SSID: 1..32 bytes. Passphrase: empty (open AP) or 8..63 characters (IEEE 802.11i WPA2/WPA3 passphrase) */
-    size_t ssid_len = strlen(new_ssid);
-    size_t pass_len = strlen(new_pass);
-    if (!fields_ok || ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+    if (!fields_ok || !doorbell_net_wifi_creds_valid(new_ssid, new_pass)) {
         mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
         doorbell_led_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");

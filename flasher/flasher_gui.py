@@ -101,13 +101,18 @@ class DoorbellFlasherApp(BuildMixin, DeviceMixin):
             else:
                 self.unit_vars[spec.kconfig] = tk.StringVar(value=str(spec.default))
 
-        # Start from the settings of the last Production build: build/sdkconfig is the project's one sdkconfig (also of
-        # a plain `idf.py build`, firmware/<role>/CMakeLists.txt)
+        # Start from the newest built sdkconfig (Production build/ or Burn build_burn/) so settings from either profile
+        # are restored on startup.
         for fw_dir, specs, vars_map in (
             (PANEL_FW_DIR, PANEL_PARAMS, self.panel_vars),
             (UNIT_FW_DIR, APARTMENT_PARAMS, self.unit_vars),
         ):
-            self._load_existing_sdkconfig(fw_dir / "build" / "sdkconfig", specs, vars_map)
+            candidates = [
+                p for p in (fw_dir / "build" / "sdkconfig", fw_dir / "build_burn" / "sdkconfig") if p.is_file()
+            ]
+            if candidates:
+                newest = max(candidates, key=lambda p: p.stat().st_mtime)
+                self._load_existing_sdkconfig(newest, specs, vars_map)
 
     @staticmethod
     def _load_existing_sdkconfig(

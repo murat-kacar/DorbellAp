@@ -96,11 +96,13 @@ esp_err_t doorbell_led_init(gpio_num_t gpio_num, const doorbell_led_indication_t
         return ESP_ERR_NO_MEM;
     }
     s_state_count = count;
+    esp_err_t err = ESP_OK;
 
     for (size_t i = 0; i < count; i++) {
         doorbell_led_pattern_t pattern = table[i].pattern;
         if ((size_t)pattern >= sizeof(s_patterns) / sizeof(s_patterns[0])) {
-            return ESP_ERR_INVALID_ARG;
+            err = ESP_ERR_INVALID_ARG;
+            goto fail;
         }
         s_states[i].state = (int)i;
         s_states[i].duration_ms = table[i].duration_ms;
@@ -121,11 +123,11 @@ esp_err_t doorbell_led_init(gpio_num_t gpio_num, const doorbell_led_indication_t
                 .arg = &s_states[i],
                 .name = "led_stop",
             };
-            esp_err_t err = esp_timer_create(&args, &s_states[i].timer);
+            err = esp_timer_create(&args, &s_states[i].timer);
             if (err != ESP_OK) {
                 /* A timed pattern loops until its stop timer fires: never run without it */
                 ESP_LOGE(TAG, "Failed to create LED stop timer: %s", esp_err_to_name(err));
-                return err;
+                goto fail;
             }
         }
     }
@@ -141,16 +143,29 @@ esp_err_t doorbell_led_init(gpio_num_t gpio_num, const doorbell_led_indication_t
         .blink_lists = lists,
         .blink_list_num = (uint16_t)count,
     };
-    esp_err_t err = led_indicator_new_ledc_device(&cfg, &ledc_cfg, &s_led);
+    err = led_indicator_new_ledc_device(&cfg, &ledc_cfg, &s_led);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to init status LED on GPIO %d: %s", (int)gpio_num, esp_err_to_name(err));
-        return err;
+        goto fail;
     }
     /* lists / one_shots stay allocated: led_indicator keeps the pointers for the device's lifetime */
     if (initial_state >= 0) {
         doorbell_led_start(initial_state);
     }
     return ESP_OK;
+
+fail:
+    for (size_t i = 0; i < count; i++) {
+        if (s_states[i].timer) {
+            esp_timer_delete(s_states[i].timer);
+        }
+    }
+    free(lists);
+    free(one_shots);
+    free(s_states);
+    s_states = NULL;
+    s_state_count = 0;
+    return err;
 }
 
 void doorbell_led_start(int state)

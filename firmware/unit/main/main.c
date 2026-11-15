@@ -13,7 +13,6 @@
 #include "esp_random.h"
 #include "esp_task_wdt.h"
 #include "doorbell_twdt.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "mbedtls/platform_util.h"
 
@@ -35,6 +34,16 @@ static const char *TAG = "doorbell_unit";
 /* Runtime state protected by s_state_mutex */
 static SemaphoreHandle_t s_state_mutex = NULL;
 static doorbell_unit_state_blob_t s_unit_state = {0};
+
+static inline void unit_lock(void)
+{
+    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+}
+
+static inline void unit_unlock(void)
+{
+    xSemaphoreGive(s_state_mutex);
+}
 static uint32_t s_runtime_tx_counter = 0;
 static uint32_t s_persisted_rx_floor = 0;
 static uint16_t s_next_seq_id = 1;
@@ -112,7 +121,9 @@ static void update_steady_led(void)
 static void schedule_next_heartbeat(bool initial_after_boot)
 {
 #if CONFIG_DOORBELL_HEARTBEAT_ENABLED
+    unit_lock();
     uint32_t interval_s = s_unit_state.heartbeat_interval_s;
+    unit_unlock();
     if (interval_s < 30) {
         interval_s = CONFIG_DOORBELL_HEARTBEAT_INTERVAL_S;
     }
@@ -154,10 +165,10 @@ static void execute_unit_reset(void)
 {
     ESP_LOGI(TAG, "Resetting apartment module pairing state and restarting (kullanim-kilavuzu.md §6.2)");
     doorbell_net_disconnect_sta();
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    unit_lock();
     doorbell_storage_unit_erase();
     mbedtls_platform_zeroize(&s_unit_state, sizeof(s_unit_state));
-    xSemaphoreGive(s_state_mutex);
+    unit_unlock();
     g_unit_paired = false;
 
     doorbell_led_start(LED_UNIT_RESULT_OK);
@@ -181,7 +192,7 @@ static doorbell_txn_verdict_t unit_ack_rx_cb(const uint8_t *frame, size_t len, c
         return DOORBELL_TXN_CONTINUE;
     }
     if (hdr->msg_type != w->ack_type || hdr->src_id != DOORBELL_ID_PANEL || hdr->dst_id != w->apt_no ||
-            hdr->tx_counter <= s_unit_state.rx_floor) {
+            hdr->tx_counter <= w->rx_floor) {
         return DOORBELL_TXN_CONTINUE;
     }
     uint32_t req_tx_counter = 0;
@@ -217,7 +228,9 @@ esp_err_t unit_run_txn(uint8_t *frame, size_t frame_len, uint32_t peer_ip, uint3
 /* One request of a paired module: counter (write-ahead, I-50), seq_id, key and panel address taken under the lock */
 typedef struct {
     uint32_t tx_counter;
+    uint32_t rx_floor;
     uint16_t seq_id;
+    uint16_t heartbeat_interval_s;
     uint32_t panel_ip;
     uint8_t apt_no;
     uint8_t k_apt[DOORBELL_KEY_SIZE];
@@ -225,14 +238,16 @@ typedef struct {
 
 static esp_err_t unit_request_begin(unit_request_t *req)
 {
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    unit_lock();
     esp_err_t err = doorbell_storage_unit_next_tx_counter(&s_unit_state, &s_runtime_tx_counter,
                                                           CONFIG_DOORBELL_NVS_COUNTER_BLOCK, &req->tx_counter);
+    req->rx_floor = s_unit_state.rx_floor;
     req->seq_id = unit_next_seq_id();
+    req->heartbeat_interval_s = s_unit_state.heartbeat_interval_s;
     req->panel_ip = s_unit_state.panel_ipv4;
     req->apt_no = s_unit_state.apt_no;
     memcpy(req->k_apt, s_unit_state.k_apt, DOORBELL_KEY_SIZE);
-    xSemaphoreGive(s_state_mutex);
+    unit_unlock();
     return err;
 }
 
@@ -248,14 +263,14 @@ static esp_err_t unit_request_encrypt(const unit_request_t *req, uint8_t msg_typ
  * the panel's boot id */
 static void unit_accept_panel_ack(const unit_ack_wait_t *w, uint32_t sender_ipv4, uint32_t panel_boot_id)
 {
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    unit_lock();
     if (doorbell_rx_accept(&s_unit_state.rx_floor, &s_unit_state.panel_ipv4, s_persisted_rx_floor,
                            w->ack_hdr.tx_counter, sender_ipv4, w->from_ip, CONFIG_DOORBELL_NVS_COUNTER_BLOCK) &&
             doorbell_storage_unit_save(&s_unit_state) == ESP_OK) {
         s_persisted_rx_floor = s_unit_state.rx_floor;
     }
     s_known_panel_boot_id = panel_boot_id;
-    xSemaphoreGive(s_state_mutex);
+    unit_unlock();
     s_missed_heartbeats = 0;
 }
 
@@ -277,7 +292,7 @@ static esp_err_t commit_pairing(const unit_pairing_result_t *res)
     next.tx_counter_ceiling = CONFIG_DOORBELL_NVS_COUNTER_BLOCK;
     next.rx_floor = res->ack_rx_counter;
 
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    unit_lock();
     esp_err_t err = doorbell_storage_unit_save(&next);
     if (err == ESP_OK) {
         s_unit_state = next;
@@ -286,7 +301,7 @@ static esp_err_t commit_pairing(const unit_pairing_result_t *res)
         s_known_panel_boot_id = res->panel_boot_id;
         memset(&s_last_ring_ack, 0, sizeof(s_last_ring_ack));
     }
-    xSemaphoreGive(s_state_mutex);
+    unit_unlock();
     mbedtls_platform_zeroize(&next, sizeof(next));
     if (err == ESP_OK) {
         g_unit_paired = true;
@@ -341,9 +356,11 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
         return;
     }
 
+    unit_lock();
     /* Step 2: Pre-crypto destination filter (I-53) — ignore frames for other apartments without counting */
-    if (clear_hdr.dst_id != s_unit_state.apt_no || clear_hdr.src_id != DOORBELL_ID_PANEL ||
+    if (!g_unit_paired || clear_hdr.dst_id != s_unit_state.apt_no || clear_hdr.src_id != DOORBELL_ID_PANEL ||
             (clear_hdr.flags & DOORBELL_FLAG_DIR_UNIT_TO_PANEL) != 0) {
+        unit_unlock();
         return;
     }
 
@@ -351,6 +368,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
     if (clear_hdr.msg_type == DOORBELL_MSG_RING_REQ && doorbell_dedup_match(&s_last_ring_ack, &clear_hdr, buf, len)) {
         doorbell_udp_send_direct(udp_sock, s_last_ring_ack.frame, s_last_ring_ack.frame_len, from_ip_host,
                                  CONFIG_DOORBELL_UDP_PORT);
+        unit_unlock();
         return;
     }
 
@@ -361,6 +379,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
     if (clear_hdr.tx_counter <= s_unit_state.rx_floor ||
             doorbell_frame_decrypt(buf, len, s_unit_state.k_apt, &auth_hdr, plain, sizeof(plain),
                                    &plain_len) != ESP_OK) {
+        unit_unlock();
         if (s_rejected_count < 0xFFFFU) {
             s_rejected_count++;
         }
@@ -369,13 +388,13 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
 
     doorbell_pl_ring_req_t req;
     if (auth_hdr.msg_type != DOORBELL_MSG_RING_REQ || doorbell_unpack_ring_req(plain, plain_len, &req) != ESP_OK) {
+        unit_unlock();
         return;
     }
 
     /* Step 6: Commit state & authenticated IP update (I-62). The replay floor is persisted on EVERY accepted RING
      * (rings are rare, so flash wear is negligible); otherwise after a module reboot the floor could lag by up to one
      * counter block and a recorded RING_REQ could be replayed to ring the bell again. */
-    xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     doorbell_rx_accept(&s_unit_state.rx_floor, &s_unit_state.panel_ipv4, s_persisted_rx_floor, auth_hdr.tx_counter,
                        req.sender_ipv4, from_ip_host, CONFIG_DOORBELL_NVS_COUNTER_BLOCK);
     if (doorbell_storage_unit_save(&s_unit_state) == ESP_OK) {
@@ -407,7 +426,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
                                      CONFIG_DOORBELL_UDP_PORT);
         }
     }
-    xSemaphoreGive(s_state_mutex);
+    unit_unlock();
 
     /* Trigger bell relay and visual bell LED */
     bool was_active = false;
@@ -460,6 +479,7 @@ static void execute_open_door_transaction(int udp_sock)
             .apt_no = req.apt_no,
             .ack_type = DOORBELL_MSG_OPEN_DOOR_ACK,
             .k_apt = req.k_apt,
+            .rx_floor = req.rx_floor,
             .req_tx_counter = req.tx_counter,
             .req_seq_id = req.seq_id,
         };
@@ -532,7 +552,7 @@ static void execute_heartbeat_transaction(int udp_sock)
         .ap_channel = ch,
         .fw_version_major = DOORBELL_FW_VERSION_MAJOR,
         .fw_version_minor = DOORBELL_FW_VERSION_MINOR,
-        .heartbeat_interval_s = s_unit_state.heartbeat_interval_s,
+        .heartbeat_interval_s = req.heartbeat_interval_s,
     };
     memcpy(hb_pl.ap_bssid, bssid, sizeof(bssid));
     uint8_t hb_plain[DOORBELL_PL_HEARTBEAT_REQ_SIZE];
@@ -545,6 +565,7 @@ static void execute_heartbeat_transaction(int udp_sock)
         .apt_no = req.apt_no,
         .ack_type = DOORBELL_MSG_HEARTBEAT_ACK,
         .k_apt = req.k_apt,
+        .rx_floor = req.rx_floor,
         .req_tx_counter = req.tx_counter,
         .req_seq_id = req.seq_id,
     };

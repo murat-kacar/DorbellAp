@@ -49,6 +49,7 @@ static _Atomic uint16_t s_disconnect_count = 0;
 #define SCAN_RECORDS_MAX 32
 static SemaphoreHandle_t s_scan_lock = NULL;
 static _Atomic bool s_scan_pending = false;
+static void (*s_scan_done_cb)(void) = NULL;
 static _Atomic int64_t s_scan_started_us = 0;
 /* A scan whose SCAN_DONE never arrived (e.g. mode change) no longer blocks a new one after this time */
 #define SCAN_STALE_US (10 * 1000000LL)
@@ -57,19 +58,29 @@ static size_t s_scan_count = 0;
 static doorbell_net_ap_info_t s_scan_results[DOORBELL_NET_SCAN_MAX];
 static doorbell_net_ap_info_t s_scan_tmp[DOORBELL_NET_SCAN_MAX]; /* event task only (keeps its stack small) */
 
-static void scan_collect_results(void)
+static wifi_ap_record_t *fetch_scan_records(uint16_t *out_count)
 {
     uint16_t n = 0;
-    size_t count = 0;
     esp_wifi_scan_get_ap_num(&n);
     if (n > SCAN_RECORDS_MAX) {
         n = SCAN_RECORDS_MAX;
     }
     wifi_ap_record_t *recs = (n > 0) ? calloc(n, sizeof(*recs)) : NULL;
     if (recs == NULL || esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) {
+        free(recs);
         esp_wifi_clear_ap_list(); /* frees the driver's list in every path */
-        n = 0;
+        *out_count = 0;
+        return NULL;
     }
+    *out_count = n;
+    return recs;
+}
+
+static void scan_collect_results(void)
+{
+    uint16_t n = 0;
+    size_t count = 0;
+    wifi_ap_record_t *recs = fetch_scan_records(&n);
 
     /* Strongest first, so the first record of each SSID is its best BSS */
     for (uint16_t i = 1; i < n; i++) {
@@ -180,8 +191,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
                 xEventGroupClearBits(s_net_evt, NET_BIT_AP_STARTED);
             }
         } else if (event_id == WIFI_EVENT_SCAN_DONE) {
-            if (s_scan_pending && s_scan_lock) {
-                scan_collect_results();
+            if (s_scan_pending && s_scan_done_cb) {
+                s_scan_done_cb();
             }
             if (s_net_evt) {
                 xEventGroupSetBits(s_net_evt, NET_BIT_SCAN_DONE);
@@ -560,6 +571,7 @@ esp_err_t doorbell_net_scan_start_async(void)
         .home_chan_dwell_time = WIFI_SCAN_HOME_CHANNEL_DWELL_DEFAULT_TIME,
     };
     s_scan_started_us = esp_timer_get_time();
+    s_scan_done_cb = scan_collect_results;
     s_scan_pending = true;
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
     if (err != ESP_OK) {
@@ -642,10 +654,10 @@ esp_err_t doorbell_net_scan_and_join_open_ap(const char *ssid_prefix, char out_s
         return err;
     }
 
-    uint16_t ap_num = 16;
-    wifi_ap_record_t ap_records[16];
-    err = esp_wifi_scan_get_ap_records(&ap_num, ap_records);
-    if (err != ESP_OK || ap_num == 0) {
+    uint16_t ap_num = 0;
+    wifi_ap_record_t *ap_records = fetch_scan_records(&ap_num);
+    if (!ap_records || ap_num == 0) {
+        free(ap_records);
         doorbell_net_set_sta_reconnect_paused(false);
         return ESP_ERR_NOT_FOUND;
     }
@@ -663,6 +675,12 @@ esp_err_t doorbell_net_scan_and_join_open_ap(const char *ssid_prefix, char out_s
         }
     }
 
+    if (found_idx >= 0 && match_count == 1) {
+        strncpy(out_ssid, (const char *)ap_records[found_idx].ssid, 32);
+        out_ssid[32] = '\0';
+    }
+    free(ap_records);
+
     if (found_idx < 0) {
         doorbell_net_set_sta_reconnect_paused(false);
         return ESP_ERR_NOT_FOUND;
@@ -673,9 +691,6 @@ esp_err_t doorbell_net_scan_and_join_open_ap(const char *ssid_prefix, char out_s
         doorbell_net_set_sta_reconnect_paused(false);
         return ESP_ERR_INVALID_STATE;
     }
-
-    strncpy(out_ssid, (const char *)ap_records[found_idx].ssid, 32);
-    out_ssid[32] = '\0';
 
     err = doorbell_net_connect_sta(out_ssid, "");
     if (err != ESP_OK) {

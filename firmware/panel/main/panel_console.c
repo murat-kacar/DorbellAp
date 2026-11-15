@@ -79,8 +79,7 @@ static int cmd_doorbell_wifi(int argc, char **argv)
 
     /* Syntax before authentication, as on the keypad (I-20): a malformed request is neither a wrong code nor a
      * successful login, so it must not touch the shared lockout counter */
-    size_t pass_len = strlen(new_pass);
-    if (strlen(new_ssid) == 0 || strlen(new_ssid) > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+    if (!doorbell_net_wifi_creds_valid(new_ssid, new_pass)) {
         printf("Error: invalid SSID or passphrase length.\n");
         return 1;
     }

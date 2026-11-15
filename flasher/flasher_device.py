@@ -251,7 +251,7 @@ class DeviceMixin:
                 if raw[0x1000] != 0xE9 or len(raw) <= app_off or raw[app_off] != 0xE9 or nvs_off >= app_off:
                     raise ValueError("image does not contain a bootloader at 0x1000 and an app at the factory offset")
                 boot_file, app_file = tmp / "boot_and_pt.bin", tmp / "app.bin"
-                boot_file.write_bytes(raw[0x1000:nvs_off])  # bootloader + partition table
+                boot_file.write_bytes(raw[0x1000 : pt_off + 0x1000])  # bootloader + partition table
                 app_file.write_bytes(raw[app_off:])
                 images: list[tuple[int, Path]] = [(0x1000, boot_file), (app_off, app_file)]
 

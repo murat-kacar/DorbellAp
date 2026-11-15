@@ -43,6 +43,22 @@ def generate_random_digits(length: int) -> str:
     return "".join(str(rng.randrange(0, 10)) for _ in range(length))
 
 
+def validate_wifi_credentials(ssid: str, pw: str, *, allow_empty_ssid: bool) -> str | None:
+    """Return an error message if SSID/password are invalid, or None if valid."""
+    if any(ch in ssid or ch in pw for ch in ("\x00", "\r", "\n")):
+        return "SSID and password cannot contain null bytes or line breaks."
+    ssid_bytes = len(ssid.encode("utf-8"))
+    pw_bytes = len(pw.encode("utf-8"))
+    if not allow_empty_ssid and ssid_bytes == 0:
+        return "SSID must be 1-32 UTF-8 bytes; password must be empty or 8-63 UTF-8 bytes."
+    if ssid_bytes == 0 and pw_bytes > 0:
+        return "Wi-Fi SSID cannot be empty when a password is provided."
+    if ssid_bytes > 32 or (pw_bytes > 0 and (pw_bytes < 8 or pw_bytes > 63)):
+        min_ssid = 0 if allow_empty_ssid else 1
+        return f"Wi-Fi SSID must be {min_ssid}-32 UTF-8 bytes, and password must be empty or 8-63 UTF-8 bytes."
+    return None
+
+
 def inspect_firmware_image(bin_path: Path) -> str | None:
     """Role ("panel", "apartment" or "unknown") of a complete flasher image (bootloader @0x1000, the partition table
     at the build's offset, the factory app where that table puts it), or None if the file is not such an image. The

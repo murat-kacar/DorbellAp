@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -12,7 +13,7 @@ extern "C" {
 typedef void (*doorbell_net_state_cb_t)(bool connected, uint32_t ipv4_host, void *ctx);
 
 /**
- * @brief Initialize Wi-Fi (RAM storage, PS_NONE), TCP/IP stack, RF entropy, and PSA Crypto.
+ * @brief Initialize Wi-Fi (RAM storage, PS_NONE), TCP/IP stack, and RF entropy.
  */
 esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, void *ctx);
 
@@ -25,6 +26,20 @@ esp_err_t doorbell_net_set_hostname(const char *hostname);
  * @brief Configure STA credentials and start connecting (never logs passphrase per I-25).
  */
 esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass);
+
+/**
+ * @brief Check whether @p ssid (1..32 bytes) and @p pass (empty for open AP, or 8..63 WPA2/WPA3 ASCII characters)
+ *        are valid building Wi-Fi credentials.
+ */
+static inline bool doorbell_net_wifi_creds_valid(const char *ssid, const char *pass)
+{
+    if (!ssid) {
+        return false;
+    }
+    size_t ssid_len = strlen(ssid);
+    size_t pass_len = pass ? strlen(pass) : 0;
+    return ssid_len >= 1 && ssid_len <= 32 && (pass_len == 0 || (pass_len >= 8 && pass_len <= 63));
+}
 
 /**
  * @brief Disconnect STA and stop auto-reconnect.

@@ -57,6 +57,7 @@ typedef struct {
     uint8_t apt_no;
     uint8_t ack_type;
     const uint8_t *k_apt;
+    uint32_t rx_floor;
     uint32_t req_tx_counter;
     uint16_t req_seq_id;
     /* Accepted ACK */
