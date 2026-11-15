@@ -48,11 +48,20 @@ tag**.
 | `0` | `magic` | `uint8_t` | 1 B | Constant `0xDB` (`'D' 'B'`) |
 | `1` | `version` | `uint8_t` | 1 B | Protocol wire version (`0x01`) |
 | `2` | `msg_type` | `uint8_t` | 1 B | Message type identifier (Section 3) |
-| `3` | `flags` | `uint8_t` | 1 B | Bit 0: `direction` (`0` = Panel→Unit, `1` = Unit→Panel)<br>Bit 1: `is_retry` (`1` on retransmission)<br>Bit 2: `is_bcast` (`1` if sent to `255.255.255.255`)<br>Bits 3–7: Reserved (`0`) |
+| `3` | `flags` | `uint8_t` | 1 B | Bit field, see the `flags` table below |
 | `4` | `src_id` | `uint8_t` | 1 B | Sender ID: `0` = Panel, `1..254` = Apartment number |
 | `5` | `dst_id` | `uint8_t` | 1 B | Destination ID: `0` = Panel, `1..254` = Apartment number (`255` is reserved: every apartment has its own key, so no frame can address all units) |
 | `6..7` | `seq_id` | `uint16_t` | 2 B | Transaction sequence ID matching a request to its `ACK` |
-| `8..11` | `tx_counter`| `uint32_t` | 4 B | Sender's strictly monotonic frame counter (`1 .. 0xFFFFFFFE`) |
+| `8..11` | `tx_counter` | `uint32_t` | 4 B | Sender's strictly monotonic frame counter (`1 .. 0xFFFFFFFE`) |
+
+`flags` bits:
+
+| Bit | Name | Meaning |
+| :--- | :--- | :--- |
+| `0` | `direction` | `0` = Panel→Unit, `1` = Unit→Panel |
+| `1` | `is_retry` | `1` on retransmission |
+| `2` | `is_bcast` | `1` if sent to `255.255.255.255` |
+| `3–7` | Reserved | `0` |
 
 ### 2.2. 13-Byte AES-128-CCM Nonce Construction
 
@@ -77,6 +86,7 @@ Byte:   0                  1        2        3..4     5..8        9..12
 ### 2.3. Pre-Crypto Filtering & Key Lookup
 
 Before invoking `psa_aead_decrypt()`, the receiver MUST perform these fast cleartext checks in order:
+
 1. Verify packet length $\ge 28$ bytes ($12\text{ B header} + 16\text{ B tag}$) and `magic == 0xDB`.
 2. **Destination filter:**
    - On an **Apartment Module (`my_apt_no`):** If `dst_id != my_apt_no`, silently drop the packet
@@ -114,7 +124,7 @@ be ignored for forward compatibility.
 | `0x05` | `HEARTBEAT_REQ` | Unit → Panel | `sender_ipv4 (4 B)`, `uptime_s (4 B)`, `free_heap (4 B)`, `min_free_heap (4 B)`, `ring_count (2 B)`, `unacked_open_count (2 B)`, `rejected_count (2 B)`, `disconnect_count (2 B)`, `reset_reason (1 B)`, `ap_rssi (int8_t, 1 B)`, `ap_channel (1 B)`, `ap_bssid (6 B)`, `fw_version_major (1 B)`, `fw_version_minor (1 B)`, `heartbeat_interval_s (2 B)` *(Total: 37 B)* |
 | `0x06` | `HEARTBEAT_ACK` | Panel → Unit | `req_tx_counter (4 B)`, `req_seq_id (2 B)`, `status (1 B)`, `sender_ipv4 (4 B)`, `panel_boot_id (4 B)` |
 | `0x07` | `PAIR_COMPLETE` | Unit → Panel | `sender_ipv4 (4 B)`, `unit_mac (6 B)`, `fw_version_major (1 B)`, `fw_version_minor (1 B)` |
-| `0x08` | `PAIR_COMPLETE_ACK`| Panel → Unit | `req_tx_counter (4 B)`, `req_seq_id (2 B)`, `status (1 B)`, `sender_ipv4 (4 B)`, `panel_boot_id (4 B)` |
+| `0x08` | `PAIR_COMPLETE_ACK` | Panel → Unit | `req_tx_counter (4 B)`, `req_seq_id (2 B)`, `status (1 B)`, `sender_ipv4 (4 B)`, `panel_boot_id (4 B)` |
 
 - **ACK `status` codes:**
   - `0x00` (`STATUS_OK`): Command executed (door relay energized / bell rung / heartbeat recorded).
@@ -135,7 +145,7 @@ be ignored for forward compatibility.
 | `msg_type` | Name | Direction | Security | Payload |
 | :--- | :--- | :--- | :--- | :--- |
 | `0x10` | `PAIR_HELLO` | Unit → Panel | Cleartext | `unit_mac (6 B)`, `unit_nonce (16 B)`, `unit_x25519_pub (32 B)`, `fw_ver (2 B)` |
-| `0x11` | `PAIR_CHALLENGE`| Panel → Unit | Cleartext + Auth Tag | `panel_mac (6 B)`, `panel_nonce (16 B)`, `panel_x25519_pub (32 B)`, `apt_no (1 B)`, `encrypted_provision_blob` (encrypted with `K_pair` via `PSA_ALG_CCM`: `wifi_ssid (33 B)`, `wifi_pass (65 B)`, `ap_channel (1 B)`, `panel_lan_ipv4 (4 B)`, `K_apt (16 B)`, `heartbeat_interval_s (2 B)`) |
+| `0x11` | `PAIR_CHALLENGE` | Panel → Unit | Cleartext + Auth Tag | `panel_mac (6 B)`, `panel_nonce (16 B)`, `panel_x25519_pub (32 B)`, `apt_no (1 B)`, `encrypted_provision_blob` (encrypted with `K_pair` via `PSA_ALG_CCM`: `wifi_ssid (33 B)`, `wifi_pass (65 B)`, `ap_channel (1 B)`, `panel_lan_ipv4 (4 B)`, `K_apt (16 B)`, `heartbeat_interval_s (2 B)`) |
 | `0x12` | `PAIR_CONFIRM` | Unit → Panel | Encrypted with `K_pair` | `unit_mac (6 B)`, `apt_no (1 B)`, `confirm_status (1 B)` |
 
 ---
@@ -269,6 +279,7 @@ digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 ### 6.2. Deterministic Evaluation Order
 
 To prevent lockout-bypass oracle attacks:
+
 1. **Cancel check:** `*#` always clears the input buffer immediately with no error and no lockout change.
 2. **Lockout gate:** If the keypad is currently in lockout and the input starts with `*`, immediately reject with the
    1 s fast blink error LED without inspecting the digits. Visitor rings (`visitor_ring`, not starting with `*`) are
@@ -329,14 +340,14 @@ active steady-state pattern. Dim brightness (`10%`) is defined as the perceived 
 | `3` | `LED_UNIT_RESET_HOLD` | Solid ON with brief OFF dip (`900 ms` ON / `100 ms` OFF) | Active while reset button held in `7–12 s` window (`12–15 s` turns OFF to signal window passed) |
 | `4` | `LED_UNIT_RESULT_OK` | Full brightness (`100%`) solid ON | One-shot (`2000 ms`) on `OPEN_DOOR_ACK` or pairing success |
 | `5` | `LED_UNIT_NO_RESPONSE` | Medium blink (`250 ms` ON / `250 ms` OFF, `500 ms` period) | One-shot (`3000 ms`) on `OPEN_DOOR_REQ` timeout |
-| `6` | `LED_UNIT_PAIRING_SEARCH`| Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while searching for Panel SoftAP / completing pairing (max `30 s` total timeout) |
+| `6` | `LED_UNIT_PAIRING_SEARCH` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while searching for Panel SoftAP / completing pairing (max `30 s` total timeout) |
 | `7` | `LED_UNIT_UNPAIRED` | Repeating double flash (`100 ms` ON, `100 ms` OFF, `100 ms` ON, `700 ms` OFF) | Steady state when module is unpaired |
 | `8` | `LED_UNIT_OUT_OF_COV` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Steady fail state when paired, until STA has IPv4 and an authenticated panel response (`HEARTBEAT_ACK`, `OPEN_DOOR_ACK`, `RING_REQ`), or after `STA` disconnect, missed `HEARTBEAT_ACK`, or `OPEN_DOOR_REQ` timeout |
 | `9` (Lowest) | `LED_UNIT_IN_COVERAGE` | Dim solid (`10%` perceived brightness) | Steady state when paired, connected to Building AP with IPv4, and Panel reachable |
 
 **Apartment Module Button Edge Cases:**
+
 - Pressing the **pairing button when already paired**: ignored; releasing in the `7–12 s` window flashes `LED_UNIT_BTN_CANCEL` (triple flash) to remind the user to reset first.
 - Pressing **both pairing and reset buttons simultaneously**: immediately cancels both holds with triple flash.
 - Pressing the **door-open button when unpaired**: immediately shows `LED_UNIT_NO_RESPONSE` (`3 s` medium blink).
 - Pressing the **door-open button while an `OPEN_DOOR_REQ` transaction is already in flight**: coalesced (ignored until the in-flight request completes or times out).
-
