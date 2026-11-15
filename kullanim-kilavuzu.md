@@ -160,7 +160,7 @@ erişim noktasına (AP) bağlı olduğundan (panel LED'inin sönük/hazır durum
 
 4. **Etiketleme ve dairede doğrulama:** Modülün üzerine eşleştirildiği **daire numarasını** yazın ve modülü daireye
    takın.
-   - Modül bina ağına bağlandığında LED'i **loş sabit** yanar (kapsama alanı dışındaysa seyrek tek flaş yapar).
+   - Modül bina ağına bağlanıp panele ulaştığında LED'i **loş sabit** yanar (ağa bağlanamazsa veya ağda paneli bulamazsa yavaş `1 Hz` yanıp söner).
    - Dairedeki **kapı açma butonuna** bir kez basarak kapının açıldığını (modül LED'inin 2 saniye tam parlak yandığını)
      ve panelden `<daire no> #` tuşlayarak doğru dairenin zilinin çaldığını doğrulayın.
 
@@ -227,8 +227,8 @@ yenisiyle değiştirilirse (veya panelin hafızası silinirse):
 2. **Bütün daire modüllerini** sıfırlayın (bölüm 6.2).
 3. Her modülü yeni panelle yeniden eşleştirin (bölüm 5).
 
-Eski panele eşleştirilmiş modüller yeni panelle çalışmaz; panelden cevap alamadıkları için yaklaşık 15 dakika içinde
-seyrek tek flaş yapmaya başlarlar ve sıfırlanıp yeniden eşleştirilene kadar böyle kalırlar.
+Eski panele eşleştirilmiş modüller yeni panelle çalışmaz; panelden cevap alamadıkları için **yavaş yanıp sönmeye
+(1 Hz)** başlarlar ve sıfırlanıp yeniden eşleştirilene kadar böyle kalırlar.
 
 ---
 
@@ -257,7 +257,7 @@ sürekli durumuna döner.
 | LED | Anlamı |
 | :--- | :--- |
 | Tekrarlayan çift flaş | Eşleşmemiş |
-| Seyrek tek flaşlar | Eşleşmiş ama ağ bağlantısı yok, kapsama alanı dışında veya panele ulaşılamıyor (kayıt silinmiş / panel kapalı) |
+| Yavaş yanıp sönme (1 Hz) | Eşleşmiş ama ağa bağlanamıyor, kapsama alanı dışında veya ağda panele ulaşılamıyor (kayıt silinmiş / panel kapalı) |
 | Loş, sabit | Normal, eşleşmiş ve ağa bağlı |
 | Hızlı yanıp sönme | Zil çalıyor (görsel zil — en yüksek önceliklidir) |
 | 2 saniye tam parlak | Kapı açıldı / eşleştirme başarılı |
@@ -284,5 +284,5 @@ panel bunu uyarı olarak yazar (bkz. Yapılandırma Ayarları, heartbeat).
 | Tuş takımı şifre kabul etmiyor, LED seyrek flaş yapıyor | Yanlış şifre kilidi | Kilit süresinin bitmesini bekleyin |
 | Şifreler unutuldu | — | Panel fabrika sıfırlama (6.1); etiketteki fabrika şifreleri geçerli olur, daire kayıtları silinir ve modüller yeniden eşleştirilir |
 | Modül sürekli çift flaş yapıyor | Modül eşleşmemiş | Eşleştirin (bölüm 5) |
-| Modül seyrek tek flaş yapıyor | Modül kapsama alanı dışında, erişim noktası (AP) / panel kapalı ya da dairenin kaydı panelden silinmiş | Erişim noktasını ve paneli kontrol edin; daire kaydı silindiyse modülü sıfırlayıp (6.2) yeniden eşleştirin |
+| Eşleşmiş modül sürekli yavaş (1 Hz) yanıp sönüyor | Modül bina Wi-Fi ağına bağlanamıyor, kapsama alanı dışında, erişim noktası (AP) / panel kapalı ya da dairenin kaydı panelden silinmiş | Erişim noktasını ve paneli kontrol edin; daire kaydı silindiyse modülü sıfırlayıp (6.2) yeniden eşleştirin |
 | Kapı açma butonuna basınca modül 3 saniye orta hızda yanıp sönüyor | Panel kapalı veya ağ bağlantısı kopuk | Panelin enerjisini ve erişim noktası (AP) bağlantısını kontrol edin |

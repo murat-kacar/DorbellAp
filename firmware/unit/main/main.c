@@ -28,8 +28,11 @@
 
 static const char *TAG = "doorbell_unit";
 
-#define UDP_SOCKET_RCVTIMEO_MS 100
-#define UNPAIRED_HOSTNAME      "doorbell-apt-unpaired"
+#define UDP_SOCKET_RCVTIMEO_MS   100
+#define UNPAIRED_HOSTNAME        "doorbell-apt-unpaired"
+#define HEARTBEAT_INITIAL_MIN_MS 1000U
+#define HEARTBEAT_INITIAL_MAX_MS 5000U
+#define HEARTBEAT_UNREACHABLE_S  15U
 
 /* Runtime state protected by s_state_mutex */
 static SemaphoreHandle_t s_state_mutex = NULL;
@@ -58,6 +61,11 @@ static uint8_t  s_reset_reason = 0;
 
 /* Coverage and heartbeat tracking (I-41, I-42, I-64, I-65) */
 static _Atomic bool s_sta_has_ip = false;
+#if CONFIG_DOORBELL_HEARTBEAT_ENABLED
+static _Atomic bool s_panel_reachable = false;
+#else
+static _Atomic bool s_panel_reachable = true;
+#endif
 static _Atomic uint32_t s_missed_heartbeats = 0;
 static _Atomic int64_t s_next_heartbeat_us = 0;
 
@@ -109,7 +117,7 @@ static void update_steady_led(void)
     }
 
     doorbell_led_stop(LED_UNIT_UNPAIRED);
-    if (s_sta_has_ip && s_missed_heartbeats < 3) {
+    if (s_sta_has_ip && s_panel_reachable) {
         doorbell_led_stop(LED_UNIT_OUT_OF_COV);
         doorbell_led_start(LED_UNIT_IN_COVERAGE);
     } else {
@@ -121,27 +129,31 @@ static void update_steady_led(void)
 static void schedule_next_heartbeat(bool initial_after_boot)
 {
 #if CONFIG_DOORBELL_HEARTBEAT_ENABLED
+    int64_t now_us = esp_timer_get_time();
+    if (initial_after_boot) {
+        /* Boot / link-up quick probe (I-64): uniform random delay in [1 s, 5 s] */
+        uint32_t span_ms = HEARTBEAT_INITIAL_MAX_MS - HEARTBEAT_INITIAL_MIN_MS;
+        uint32_t delay_ms = HEARTBEAT_INITIAL_MIN_MS + ((span_ms > 0) ? (esp_random() % (span_ms + 1U)) : 0U);
+        s_next_heartbeat_us = now_us + (int64_t)delay_ms * 1000LL;
+        return;
+    }
+
     unit_lock();
     uint32_t interval_s = s_unit_state.heartbeat_interval_s;
     unit_unlock();
     if (interval_s < 30) {
         interval_s = CONFIG_DOORBELL_HEARTBEAT_INTERVAL_S;
     }
-    int64_t now_us = esp_timer_get_time();
-    if (initial_after_boot) {
-        /* Boot de-synchronization (I-64): uniform random delay in [5 s, interval_s] */
-        uint32_t span_ms = (interval_s > 5) ? ((interval_s - 5U) * 1000U) : 5000U;
-        uint32_t delay_ms = 5000U + (esp_random() % (span_ms + 1U));
-        s_next_heartbeat_us = now_us + (int64_t)delay_ms * 1000LL;
-    } else {
-        /* Periodic interval +/- 10% random jitter (I-64) */
-        int32_t base_ms = (int32_t)(interval_s * 1000U);
-        int32_t jitter_span = base_ms / 10;
-        int32_t jitter_ms = (jitter_span > 0)
-                            ? ((int32_t)(esp_random() % (uint32_t)(2 * jitter_span)) - jitter_span)
-                            : 0;
-        s_next_heartbeat_us = now_us + (int64_t)(base_ms + jitter_ms) * 1000LL;
+    if (!s_panel_reachable && interval_s > HEARTBEAT_UNREACHABLE_S) {
+        interval_s = HEARTBEAT_UNREACHABLE_S;
     }
+    /* Periodic interval +/- 10% random jitter (I-64) */
+    int32_t base_ms = (int32_t)(interval_s * 1000U);
+    int32_t jitter_span = base_ms / 10;
+    int32_t jitter_ms = (jitter_span > 0)
+                        ? ((int32_t)(esp_random() % (uint32_t)(2 * jitter_span)) - jitter_span)
+                        : 0;
+    s_next_heartbeat_us = now_us + (int64_t)(base_ms + jitter_ms) * 1000LL;
 #else
     (void)initial_after_boot;
 #endif
@@ -152,10 +164,16 @@ static void on_net_state_changed(bool connected, uint32_t ipv4_host, void *ctx)
     (void)ipv4_host;
     (void)ctx;
     s_sta_has_ip = connected;
+    if (!connected) {
+        s_next_heartbeat_us = 0;
+#if CONFIG_DOORBELL_HEARTBEAT_ENABLED
+        s_panel_reachable = false;
+#endif
+    }
     if (g_unit_pairing_active) {
         return;
     }
-    if (connected && g_unit_paired && s_next_heartbeat_us == 0) {
+    if (connected && g_unit_paired && (!s_panel_reachable || s_next_heartbeat_us == 0)) {
         schedule_next_heartbeat(true);
     }
     update_steady_led();
@@ -272,6 +290,7 @@ static void unit_accept_panel_ack(const unit_ack_wait_t *w, uint32_t sender_ipv4
     s_known_panel_boot_id = panel_boot_id;
     unit_unlock();
     s_missed_heartbeats = 0;
+    s_panel_reachable = true;
 }
 
 /* ---- Two-phase pairing: run the client (unit_pairing.c), then commit (I-30, I-50) ---- */
@@ -330,8 +349,9 @@ static void execute_unit_pairing(int udp_sock)
     g_unit_pairing_active = false;
     doorbell_led_stop(LED_UNIT_PAIRING_SEARCH);
     if (ok) {
+        s_panel_reachable = true;
         s_missed_heartbeats = 0;
-        schedule_next_heartbeat(true);
+        schedule_next_heartbeat(false);
         doorbell_led_start(LED_UNIT_RESULT_OK);
         doorbell_relay_trigger(&s_bell_relay, NULL); /* 1 bell ring on pairing success */
         ESP_LOGI(TAG, "Successfully paired as apartment %u", (unsigned)apt_no);
@@ -402,6 +422,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
     }
     s_known_panel_boot_id = req.panel_boot_id;
     s_missed_heartbeats = 0;
+    s_panel_reachable = true;
 
     uint32_t my_ip = 0;
     doorbell_net_get_sta_ipv4(&my_ip);
@@ -449,6 +470,10 @@ static void execute_open_door_transaction(int udp_sock)
     if (!g_unit_paired || !doorbell_net_get_sta_ipv4(&my_ip)) {
         if (s_unacked_open_count < 0xFFFFU) {
             s_unacked_open_count++;
+        }
+        if (g_unit_paired) {
+            s_panel_reachable = false;
+            update_steady_led();
         }
         doorbell_led_start(LED_UNIT_NO_RESPONSE);
         return;
@@ -515,7 +540,10 @@ static void execute_open_door_transaction(int udp_sock)
         if (s_unacked_open_count < 0xFFFFU) {
             s_unacked_open_count++;
         }
+        s_panel_reachable = false;
+        schedule_next_heartbeat(false);
         doorbell_led_start(LED_UNIT_NO_RESPONSE);
+        update_steady_led();
     }
 }
 
@@ -580,6 +608,7 @@ static void execute_heartbeat_transaction(int udp_sock)
         unit_accept_panel_ack(&w, ack_pl.sender_ipv4, ack_pl.panel_boot_id);
     } else {
         s_missed_heartbeats++;
+        s_panel_reachable = false;
         ESP_LOGW(TAG, "Missed HEARTBEAT_ACK (consecutive=%lu)", (unsigned long)s_missed_heartbeats);
     }
     update_steady_led();
@@ -656,7 +685,7 @@ void app_main(void)
         [LED_UNIT_NO_RESPONSE]    = {DOORBELL_LED_MEDIUM_BLINK, CONFIG_DOORBELL_LED_NO_RESP_DURATION_MS},
         [LED_UNIT_PAIRING_SEARCH] = {DOORBELL_LED_SLOW_BLINK, 0},
         [LED_UNIT_UNPAIRED]       = {DOORBELL_LED_DOUBLE_FLASH, 0},
-        [LED_UNIT_OUT_OF_COV]     = {DOORBELL_LED_SPARSE_FLASH, 0},
+        [LED_UNIT_OUT_OF_COV]     = {DOORBELL_LED_SLOW_BLINK, 0},
         [LED_UNIT_IN_COVERAGE]    = {DOORBELL_LED_DIM, 0},
     };
     ESP_ERROR_CHECK(doorbell_led_init(CONFIG_DOORBELL_UNIT_GPIO_STATUS_LED, led_table, LED_UNIT_MAX, -1));

@@ -244,13 +244,15 @@ Normative companion specifications:
 
 ## 6. Confirmable Heartbeat & System Health Monitoring (`I-12`, `I-41`, `I-42`, `I-52`, `I-58`, `I-64`)
 
-- **Interval & Boot De-synchronization (`I-64`):** Default **`300 s`** (5 minutes, with $\pm 10\%$ random jitter;
-  provisioned to modules during pairing `I-39`). After boot, the first heartbeat is sent after a uniform random delay in
-  $[5\text{ s}, \text{Heartbeat interval}]$ to prevent a post-power-outage packet storm.
+- **Interval, Boot Probe & Recovery (`I-64`):** Default **`300 s`** (5 minutes, with $\pm 10\%$ random jitter;
+  provisioned to modules during pairing `I-39`). After boot or link-up, the first heartbeat probe is sent after a uniform
+  random delay in $[1\text{ s}, 5\text{ s}]$ to prevent a post-power-outage packet storm while confirming panel reachability
+  promptly; while unreachable, probes repeat every `15 s` ($\pm 10\%$ jitter).
 - **Confirmable Transport (`I-12`, `I-41`, `I-42`):** Every `HEARTBEAT_REQ` is acknowledged by the panel with an
-  authenticated `HEARTBEAT_ACK` (refreshing the module's cached panel IP). If a paired module receives no authenticated
-  `HEARTBEAT_ACK` for 3 consecutive intervals, its steady-state LED switches from `Dim solid (10%)` to `Sparse single
-  flash (3000 ms)` to indicate that the panel is unreachable or the registration was deleted.
+  authenticated `HEARTBEAT_ACK` (refreshing the module's cached panel IP). While paired, if `STA` has no IPv4 or the
+  panel has not answered (before first `HEARTBEAT_ACK`/`OPEN_DOOR_ACK`/`RING_REQ`, on missed `HEARTBEAT_ACK`, or on
+  `OPEN_DOOR_REQ` timeout), the steady-state LED shows `Slow blink (1 Hz)` (`LED_UNIT_OUT_OF_COV`) instead of `Dim
+  solid (10%)`.
 - **Payload Telemetry (`I-58`, `I-68`):** Uptime (`uptime_s`), last reset reason (`esp_reset_reason()` — note that on
   classic ESP32, `EN` pin resets report as `ESP_RST_POWERON`, `I-68`), received ring count, unacknowledged door-open
   requests, rejected messages, Wi-Fi disconnect count, AP signal strength (`rssi`), AP `bssid` and `channel`, current

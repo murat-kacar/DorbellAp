@@ -60,7 +60,7 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 | Pairing completion timeout | 10 s | Modül yakalandıktan sonra bina erişim noktasına (AP) bağlanıp DHCP'den IP alarak son onayı (`PAIR_COMPLETE`) göndermesi için tanınan ek tamamlama süresi. En az `5 s + 4 × ACK timeout + 0,5 s` olmalıdır (400 ms ile 7,1 s); daha kısaysa derleme hata verir. Panel ve modülde **aynı** olmalıdır. |
 | Replay counter NVS block size | 100 | Mesaj sayacının flash'a kaç mesajda bir önceden ayrılarak (write-ahead) yazıldığı. |
 | Module health reports (heartbeat) | Açık | Her modül belirli aralıklarla panele onaylı durum raporu gönderir; panel her raporu loglar ve `ACK` döner. Kapatılırsa "no report" uyarıları, sessizlikte yeniden başlatma ve modülün "panele ulaşılamıyor" LED uyarısı devre dışı kalır. |
-| Heartbeat interval | 300 s | İki rapor arasındaki süre (±%10 rastgele sapma ile; elektrik kesintisi dönüşünde ilk rapor `[5 s .. Heartbeat interval]` arasında rastgele gecikmeyle gönderilir). |
+| Heartbeat interval | 300 s | İki rapor arasındaki süre (±%10 rastgele sapma ile; açılışta veya ağ bağlantısı kurulduğunda ilk doğrulama `1–5 s` içinde, panele ulaşılamıyorken yeniden denemeler `15 s` arayla gönderilir). |
 
 **ACK ve tekrar gönderim örneği:** 400 ms ve zil tekrarı 2 ise panel, "cevap vermiyor" göstermeden önce en fazla
 3 × 400 ms = 1,2 saniye bekler. Alıcı cihaz son gönderdiği ACK paketini önbellekte tutar; ACK paketi yolda kaybolursa
@@ -76,8 +76,9 @@ kesintisi ve EN butonu `POWERON` olarak görünür), aldığı zil sayısını, 
 gelip doğrulamadan geçemeyen (reddedilen) mesajları, Wi-Fi kopma sayısını, bağlı olduğu erişim noktasından (AP) aldığı
 sinyal gücünü (RSSI), kanal/BSSID bilgisini, yazılım sürümünü ve boş belleği (anlık ve en düşük) içerir. Başka dairelere
 giden broadcast paketler başlıkta elenir ve reddedilen mesaj sayacını artırmaz. Bir modülden 3 aralık boyunca rapor
-gelmezse panel "no report" uyarısı yazar; modül de panelden 3 aralık boyunca `HEARTBEAT_ACK` alamazsa LED'ini seyrek tek
-flaşa geçirir.
+gelmezse panel "no report" uyarısı yazar; modül ise panelden henüz doğrulanmış yanıt alamadığında, ağa bağlanamadığında,
+`HEARTBEAT_ACK` kaçırdığında veya kapı açma isteği cevapsız kaldığında LED'ini yavaş yanıp sönmeye (`1 Hz`) geçirir ve
+`15 s` arayla paneli yeniden yoklar.
 
 - **Aralık örneği:** UDP yapısında trafik modül sayısıyla doğrusal artar. 99 modüllü bir binada 300 s (5 dakika) aralık
   saniyede ortalama yalnızca 0,33 rapor üretir.

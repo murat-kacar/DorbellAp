@@ -162,16 +162,21 @@ be ignored for forward compatibility.
      - The receiver sends the `ACK` **before** starting the 500 ms relay pulse so relay coil inrush or timer scheduling
        does not delay the network response.
 2. **Confirmable Heartbeat & Liveness (`I-12`, `I-41`, `I-42`, `I-64`):**
-   - After boot and initial `IP_EVENT_STA_GOT_IP`, each apartment module schedules its **first** heartbeat after a
-     uniform random delay in $[5\text{ s}, \text{Heartbeat interval}]$ to prevent a post-power-outage boot storm
-     (`I-64`). Subsequent heartbeats fire at `Heartbeat interval` $\pm 10\%$ random jitter.
+   - After boot and initial `IP_EVENT_STA_GOT_IP` (or reconnect), each apartment module starts with its panel
+     reachability flag cleared and schedules an **initial probe** `HEARTBEAT_REQ` after a uniform random delay in
+     $[1\text{ s}, 5\text{ s}]$ (`I-64`) to prevent a post-power-outage boot storm while confirming panel reachability
+     promptly.
+   - While the panel is reachable, subsequent heartbeats fire at `Heartbeat interval` $\pm 10\%$ random jitter. While
+     the panel is unreachable, re-probes fire every `15 s` $\pm 10\%$ random jitter (unless `Heartbeat interval` is
+     shorter, in which case `Heartbeat interval` is used).
    - Each `HEARTBEAT_REQ` uses `1` retry (attempt 1 unicast to panel IP; attempt 2 unicast + limited broadcast
      `255.255.255.255`).
-   - When the Panel replies with an authenticated `HEARTBEAT_ACK`, the module updates its stored Panel IPv4 address.
-   - **Orphan / Panel-Unreachable Indication (`I-41`, `I-42`):** If an apartment module is associated to the AP but
-     fails to receive an authenticated `HEARTBEAT_ACK` (or any authenticated frame from the Panel) for **3 consecutive
-     heartbeat intervals**, it transitions its steady-state LED from `Dim solid (10%)` to `Sparse single flash (3000 ms)`
-     until an authenticated Panel frame is received.
+   - When the Panel replies with an authenticated `HEARTBEAT_ACK` (or `OPEN_DOOR_ACK` / `RING_REQ`), the module updates
+     its stored Panel IPv4 address and marks the panel reachable.
+   - **Network / Panel-Unreachable Fail Indication (`I-41`, `I-42`):** Until the module is connected to the Building AP
+     with IPv4 **and** has received an authenticated response from the Panel — or whenever `STA` disconnects, a
+     `HEARTBEAT_REQ` receives no `HEARTBEAT_ACK`, or an `OPEN_DOOR_REQ` times out — its steady-state LED shows `Slow blink
+     (1 Hz)` (`LED_UNIT_OUT_OF_COV`) instead of `Dim solid (10%)` (`LED_UNIT_IN_COVERAGE`).
 
 ---
 
@@ -327,7 +332,7 @@ active steady-state pattern. Dim brightness (`10%`) is defined as the perceived 
 | `5` | `LED_UNIT_NO_RESPONSE` | Medium blink (`250 ms` ON / `250 ms` OFF, `500 ms` period) | One-shot (`3000 ms`) on `OPEN_DOOR_REQ` timeout |
 | `6` | `LED_UNIT_PAIRING_SEARCH`| Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while searching for Panel SoftAP / completing pairing (max `30 s` total timeout) |
 | `7` | `LED_UNIT_UNPAIRED` | Repeating double flash (`100 ms` ON, `100 ms` OFF, `100 ms` ON, `700 ms` OFF) | Steady state when module is unpaired |
-| `8` | `LED_UNIT_OUT_OF_COV` | Sparse single flash (`100 ms` ON / `2900 ms` OFF, `3000 ms` period) | Steady state when paired, but disconnected from Building AP or missing 3 consecutive `HEARTBEAT_ACK`s (`I-41`, `I-42`) |
+| `8` | `LED_UNIT_OUT_OF_COV` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Steady fail state when paired, until STA has IPv4 and an authenticated panel response (`HEARTBEAT_ACK`, `OPEN_DOOR_ACK`, `RING_REQ`), or after `STA` disconnect, missed `HEARTBEAT_ACK`, or `OPEN_DOOR_REQ` timeout (`I-41`, `I-42`) |
 | `9` (Lowest) | `LED_UNIT_IN_COVERAGE` | Dim solid (`10%` perceived brightness) | Steady state when paired, connected to Building AP with IPv4, and Panel reachable |
 
 **Apartment Module Button Edge Cases (`I-63`):**
