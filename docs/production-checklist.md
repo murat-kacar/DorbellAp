@@ -48,7 +48,7 @@ An unprovisioned panel fails closed and disables keypad codes until provisioned 
 
 | # | Check | Pass criterion |
 | :--- | :--- | :--- |
-| 4.1 | Building AP meets the `AGENTS.md` §2 AP checklist (client isolation disabled, 802.11b rates enabled) | Modules associate; boot log `Station restricted to 802.11b`. If 4.2–4.4 then fail, check the AP for client isolation and broadcast / multicast filtering first |
+| 4.1 | Building AP meets the `AGENTS.md` §2 AP checklist (client isolation, broadcast / multicast filtering and proxy-ARP disabled) | Modules associate. If 4.2–4.4 then fail, check the AP for client isolation and broadcast / multicast filtering first |
 | 4.2 | Ring `<apt> #` | Correct module rings |
 | 4.3 | Door open from module button and with `* <user> #` | Relay pulses 0.5 s; module LED 2 s full |
 | 4.4 | Panel reboot, then door open from module | Opens (STATUS_CHALLENGE path) |

@@ -66,8 +66,7 @@ Normative companion specifications:
        configuration `TR` because default country `"01"` scans channels `12–13` passively).
     2. **Client isolation (AP isolation) DISABLED**, multicast/broadcast filtering DISABLED, proxy-ARP DISABLED.
     3. **WPA2-PSK (AES-CCMP) or WPA2/WPA3 transition mode** (WEP/TKIP are rejected by ESP-IDF default authmode threshold).
-       **802.11b rates enabled** (no "disable 802.11b" / minimum basic rate > 11 Mbps), because stations run
-       802.11b-only by default (§7).
+       Stations use the ESP-IDF default PHY mode (802.11b/g/n).
     4. **DHCP server enabled** with a lease pool and AP association table sized for `N_apartments + 1 (panel) +
        infrastructure` (use a `/23` subnet if $>240$ hosts). Assign a static DHCP reservation for the panel MAC.
 - **Device Roles & Pinned Platform Versions:**
@@ -227,7 +226,7 @@ Normative companion specifications:
 - **Unicast + Dual-Path Broadcast Retry:**
   - Attempt 1 is sent via **unicast** to the peer's last known IPv4 address (or limited broadcast `255.255.255.255` if
     unknown).
-  - If no `ACK` arrives within `Application ACK timeout` (`400 ms` $\pm 25\text{ ms}$ jitter — 802.11b-only stations),
+  - If no `ACK` arrives within `Application ACK timeout` (`400 ms` $\pm 25\text{ ms}$ jitter),
     retries (`RING retries = 2`, `OPEN_DOOR retries = 1`, `HEARTBEAT retries = 1`) send the **byte-identical frame** to
     **both** the last known unicast IP **and** the limited broadcast address (`255.255.255.255`, RFC 1122 §3.2.1.3).
   - Receivers cache the last `ACK` per peer and re-send it on duplicate `(src_id, tx_counter, seq_id)` without
@@ -293,18 +292,15 @@ Normative companion specifications:
   3. `CONFIG_NVS_FLASH_VERIFY_ERASE=y` (default `n`; storage reliability).
   4. Runtime Wi-Fi API settings: `esp_wifi_set_ps(WIFI_PS_NONE)`, `esp_wifi_set_storage(WIFI_STORAGE_RAM)`,
      `WIFI_ALL_CHANNEL_SCAN` + `WIFI_CONNECT_AP_BY_SIGNAL`, and `.max_connection = 4` on SoftAP.
-  5. `CONFIG_DOORBELL_WIFI_STA_11B_ONLY=y` (ESP-IDF default protocol is 802.11b/g/n): the station interface runs
-     `esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B)` so links use the low-SNR DSSS/CCK rates for longer
-     reach. The building AP must accept 802.11b clients (no "disable 802.11b" / minimum basic rate > 11 Mbps).
-  6. `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`, ESP-IDF default `-Og`) in both `sdkconfig.defaults` so the panel
+  5. `CONFIG_COMPILER_OPTIMIZATION_SIZE=y` (`-Os`, ESP-IDF default `-Og`) in both `sdkconfig.defaults` so the panel
      app fits comfortably in the 1 MB factory partition. The flasher builds two release (`-Os`) profiles: **Production**
      (unlocked) and **Burn** (locked). Assertions stay enabled in both. The Production profile does not burn eFuses.
-  7. Flasher **Burn** profile = Production `-Os` + the overlay `firmware/sdkconfig.burn` (Secure Boot v2 RSA-3072,
+  6. Flasher **Burn** profile = Production `-Os` + the overlay `firmware/sdkconfig.burn` (Secure Boot v2 RSA-3072,
      release flash encryption, UART ROM download mode permanently disabled, NVS encryption with the flash-encryption
      key scheme, `CONFIG_ESP32_REV_MIN_3`) and the partition table `firmware/partitions_burn.csv` (table at
      `0x10000`, `nvs`, encrypted `nvs_keys`, factory app at `0x20000`). It builds in `firmware/<role>/build_burn/`
      and never touches the Production build state. ADR 0015.
-  8. The flasher never edits an `sdkconfig`: each profile builds in its own directory (`build/`, `build_burn/`)
+  7. The flasher never edits an `sdkconfig`: each profile builds in its own directory (`build/`, `build_burn/`)
      with the standard ESP-IDF layering `SDKCONFIG_DEFAULTS="firmware/sdkconfig.defaults;<build>/sdkconfig.flasher
      [;firmware/sdkconfig.burn]"` (`sdkconfig.flasher` = the GUI settings), exactly as CI builds. The `sdkconfig` is
      regenerated whenever a layer changed (content hash) and kept otherwise, so unchanged builds stay incremental.

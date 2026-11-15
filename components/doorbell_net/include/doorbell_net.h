@@ -114,7 +114,6 @@ typedef struct {
     char ssid[33];      /**< NUL-terminated SSID as received (may be non-UTF-8) */
     int8_t rssi;        /**< dBm of the strongest BSS with this SSID */
     bool secured;       /**< authmode != OPEN */
-    bool supports_11b;  /**< some BSS advertises 802.11b rates (needed with CONFIG_DOORBELL_WIFI_STA_11B_ONLY) */
 } doorbell_net_ap_info_t;
 
 /**

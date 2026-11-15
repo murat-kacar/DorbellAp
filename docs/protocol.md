@@ -238,11 +238,10 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    result indicator; the HTML result page is best-effort.
 4. **Network list:** When the portal opens (and on `GET /scan`, not during a credential test) the panel runs one
    non-blocking active scan that returns to the SoftAP channel between scanned channels (default home-channel dwell),
-   so connected clients stay associated. Hidden SSIDs are skipped, BSSs with the same SSID are merged (strongest RSSI,
-   802.11b support if any BSS has it), at most 15 networks are listed by signal strength. With
-   `CONFIG_DOORBELL_WIFI_STA_11B_ONLY` a network without 802.11b rates is shown as incompatible and cannot be selected.
+   so connected clients stay associated. Hidden SSIDs are skipped, BSSs with the same SSID are merged (strongest RSSI),
+   at most 15 networks are listed by signal strength.
    The form submits `net=<index>&gen=<scan generation>`; the panel takes the SSID bytes from its own cached list and
-   rejects a stale generation, an out-of-range index or an incompatible network. `net=m` (or no `net`) uses the typed
+   rejects a stale generation or an out-of-range index. `net=m` (or no `net`) uses the typed
    `ssid` field (hidden networks). All SSIDs are HTML-escaped. No background scanning.
 5. **Captive portal:** DNS responder on UDP 53 bound to the SoftAP (every `A` query → SoftAP IP, TTL 10 s; other
    types → empty `NOERROR`) and `302` from unknown paths to the form, so phones open the page by themselves.

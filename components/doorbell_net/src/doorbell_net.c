@@ -102,8 +102,7 @@ static void scan_collect_results(void)
             k++;
         }
         if (k < count) {
-            s_scan_tmp[k].supports_11b = s_scan_tmp[k].supports_11b || recs[i].phy_11b;
-            continue;
+            continue; /* sorted by signal: the first entry already holds the strongest BSS of this SSID */
         }
         if (count == DOORBELL_NET_SCAN_MAX) {
             continue;
@@ -112,7 +111,6 @@ static void scan_collect_results(void)
         s_scan_tmp[count].ssid[sizeof(s_scan_tmp[count].ssid) - 1] = '\0';
         s_scan_tmp[count].rssi = recs[i].rssi;
         s_scan_tmp[count].secured = (recs[i].authmode != WIFI_AUTH_OPEN);
-        s_scan_tmp[count].supports_11b = recs[i].phy_11b;
         count++;
     }
     free(recs);
@@ -219,25 +217,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
-/* Optional 802.11b-only station (CONFIG_DOORBELL_WIFI_STA_11B_ONLY). Called after every esp_wifi_set_mode();
- * it only writes the protocol when the driver reports a different bitmap, so an already-correct station
- * interface is never touched while connected. */
-static void apply_sta_protocol(void)
-{
-#if CONFIG_DOORBELL_WIFI_STA_11B_ONLY
-    uint8_t current = 0;
-    if (esp_wifi_get_protocol(WIFI_IF_STA, &current) == ESP_OK && current == WIFI_PROTOCOL_11B) {
-        return;
-    }
-    esp_err_t err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Station restricted to 802.11b (was protocol bitmap 0x%02x)", (unsigned)current);
-    } else {
-        ESP_LOGW(TAG, "Failed to restrict station to 802.11b: %s", esp_err_to_name(err));
-    }
-#endif
-}
-
 esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, void *ctx)
 {
     s_state_cb = cb;
@@ -283,7 +262,6 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
                                                             NULL, NULL), TAG, "IP_EVENT handler");
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode");
-    apply_sta_protocol();
     /* Starting the radio also makes esp_random() / PSA random true hardware random numbers: ESP-IDF
      * initializes PSA Crypto itself at startup, and MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG draws every psa_generate_random()
      * from the hardware RNG, so keys and nonces generated from here on use RF entropy */
@@ -515,7 +493,6 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
     xEventGroupClearBits(s_net_evt, NET_BIT_AP_STARTED);
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err == ESP_OK) {
-        apply_sta_protocol();
         err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     }
     mbedtls_platform_zeroize(&ap_cfg, sizeof(ap_cfg));
@@ -542,7 +519,6 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
 esp_err_t doorbell_net_stop_softap(void)
 {
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
-    apply_sta_protocol();
     ESP_LOGI(TAG, "Stopped SoftAP, returned to WIFI_MODE_STA");
     return err;
 }

@@ -165,17 +165,15 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
     bool scanning = false;
     size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, &scanning);
 
-    /* Preselect the configured network if it is in the list, otherwise the strongest compatible one */
+    /* Preselect the configured network if it is in the list, otherwise the strongest one */
     int selected = -1;
     for (size_t i = 0; i < count && selected < 0; i++) {
-        if (current_ssid[0] != '\0' && strcmp(nets[i].ssid, current_ssid) == 0 && nets[i].supports_11b) {
+        if (current_ssid[0] != '\0' && strcmp(nets[i].ssid, current_ssid) == 0) {
             selected = (int)i;
         }
     }
-    for (size_t i = 0; i < count && selected < 0; i++) {
-        if (nets[i].supports_11b) {
-            selected = (int)i;
-        }
+    if (selected < 0 && count > 0) {
+        selected = 0;
     }
 
     char esc[200]; /* 32-byte SSID, every byte escaped to at most 6 characters */
@@ -194,7 +192,7 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
                           "input{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}"
                           "label.n{font-weight:normal;margin-top:6px;padding:6px 0;border-bottom:1px solid #ddd;}"
                           "label.n input{width:auto;margin:0 8px 0 0;}"
-                          "small{color:#666;}.x{color:#b33;}"
+                          "small{color:#666;}"
                           "button{margin-top:18px;width:100%;padding:10px;font-size:16px;}</style></head>"
                           "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
                           "<form method=\"POST\" action=\"/save\">", HTTPD_RESP_USE_STRLEN);
@@ -214,14 +212,11 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
                            : nets[i].rssi >= -70 ? "▂▄▆"
                            : nets[i].rssi >= -80 ? "▂▄"
                            : "▂";
-        /* 802.11b-only station (CONFIG_DOORBELL_WIFI_STA_11B_ONLY): an AP without 11b rates cannot be joined */
-        bool usable = nets[i].supports_11b;
         snprintf(row, sizeof(row),
-                 "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"%u\"%s%s>%s "
-                 "<small>%s %d dBm%s</small>%s</label>",
-                 (unsigned)i, ((int)i == selected) ? " checked" : "", usable ? "" : " disabled", esc, bars,
-                 (int)nets[i].rssi, nets[i].secured ? " &#128274;" : " (açık)",
-                 usable ? "" : " <small class=\"x\">uyumsuz: erişim noktasında 802.11b kapalı</small>");
+                 "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"%u\"%s>%s "
+                 "<small>%s %d dBm%s</small></label>",
+                 (unsigned)i, ((int)i == selected) ? " checked" : "", esc, bars, (int)nets[i].rssi,
+                 nets[i].secured ? " &#128274;" : " (açık)");
         httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
     }
 
@@ -319,7 +314,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         doorbell_net_ap_info_t nets[DOORBELL_NET_SCAN_MAX];
         uint32_t gen = 0;
         size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, NULL);
-        if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen || !nets[idx].supports_11b) {
+        if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen) {
             mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
             doorbell_led_start(LED_PANEL_RESULT_ERR);
             httpd_resp_set_type(req, "text/html; charset=utf-8");

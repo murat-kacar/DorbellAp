@@ -27,11 +27,10 @@ Cihazlar bina içindeki yerel erişim noktası (AP) üzerinden Wi-Fi/UDP ile hab
 
 1. **Radyo ve Kanal:** 2,4 GHz bandında **görünür SSID** yayınlanıyor olmalıdır (önerilen sabit kanallar: **1, 6 veya 11**; kanal 12–13 kullanılacaksa cihaz ülke kodu `TR` olmalıdır).
 2. **Güvenlik:** WPA2-PSK (AES) veya WPA2/WPA3 geçiş modu kullanın (WEP ve TKIP kabul edilmez).
-3. **802.11b Desteği:** Erişim noktasında **"802.11b'yi kapat / legacy hızları devre dışı bırak"** ayarı **kapalı** olmalı; 1–11 Mbps hızları etkin bırakılmalıdır.
-4. **Ağ İzolasyonu ve Filtreler:** **İstemci izolasyonu (AP / Client Isolation)**, broadcast/multicast filtreleme ve **proxy-ARP** **kapalı** olmalıdır.
-5. **DHCP Havuzu:** DHCP sunucusu açık olmalı ve IP havuzu `daire sayısı + 1 (panel) + altyapı` cihazı kapsayacak boyutta olmalıdır (240'tan fazla cihaz varsa `/23` alt ağı kullanın). Panel MAC adresi için sabit DHCP IP ayrılması önerilir.
-6. **Çok Katlı Binalar (Çoklu AP / Güçlendirici):** En güvenilir topoloji aynı SSID/şifreyi yayınlayan **kablolu erişim noktalarıdır**. Kablosuz tekrarlayıcı (repeater) zorunluysa aynı SSID ve şifreyle, NAT veya `_EXT` uzantısı olmadan **köprü (Layer-2 bridge) modunda** ve en fazla **1 kablosuz aktarma (hop)** olacak şekilde kurun.
-7. **Elektrikli Kilit Tipi:** Enerji verildiğinde açılan (fail-secure) elektrikli kilit karşılığı kullanın; elektrik kesildiğinde kapı kilitli kalır.
+3. **Ağ İzolasyonu ve Filtreler:** **İstemci izolasyonu (AP / Client Isolation)**, broadcast/multicast filtreleme ve **proxy-ARP** **kapalı** olmalıdır.
+4. **DHCP Havuzu:** DHCP sunucusu açık olmalı ve IP havuzu `daire sayısı + 1 (panel) + altyapı` cihazı kapsayacak boyutta olmalıdır (240'tan fazla cihaz varsa `/23` alt ağı kullanın). Panel MAC adresi için sabit DHCP IP ayrılması önerilir.
+5. **Çok Katlı Binalar (Çoklu AP / Güçlendirici):** En güvenilir topoloji aynı SSID/şifreyi yayınlayan **kablolu erişim noktalarıdır**. Kablosuz tekrarlayıcı (repeater) zorunluysa aynı SSID ve şifreyle, NAT veya `_EXT` uzantısı olmadan **köprü (Layer-2 bridge) modunda** ve en fazla **1 kablosuz aktarma (hop)** olacak şekilde kurun.
+6. **Elektrikli Kilit Tipi:** Enerji verildiğinde açılan (fail-secure) elektrikli kilit karşılığı kullanın; elektrik kesildiğinde kapı kilitli kalır.
 
 ### 1.2. Panel İlk Kurulumu
 
@@ -312,7 +311,7 @@ Panelin seri monitörü (`UART0`, `115200` baud) üzerinden tüm modüllerin dur
 | Zil çalınca panel **3 s orta hızda** yanıp sönüyor | Modülün enerjisi yok, AP/tekrarlayıcı kapalı veya modül kapsama dışında | Modül beslemesini, AP'yi ve modül LED'ini kontrol edin; AP'de istemci izolasyonunun kapalı olduğundan emin olun |
 | Zil çalınca panel **1 s hızlı** yanıp sönüyor | Numara geçersiz veya o daire kayıtlı değil | Daire numarasını (1–99) doğrulayın; gerekiyorsa modülü eşleştirin |
 | Eşleştirme başlamıyor veya hata veriyor | Panel ağa bağlı değil, daire dolu, modül zaten eşleşmiş veya birden fazla modül eşleştirme modunda | Panel LED'inin sönük olduğunu doğrulayın; eski daire kaydını silin (3.4), modülü sıfırlayın (3.5) ve aynı anda tek modül deneyin |
-| Eşleşmiş modül sürekli **1 Hz yavaş** yanıp sönüyor | AP kapalı, Wi-Fi sinyali yetersiz, panel kapalı, bina SSID/şifresi değişmiş ya da kayıt panelden silinmiş | AP ve paneli kontrol edin; AP'de `802.11b` hızlarının açık ve istemci izolasyonunun kapalı olduğunu doğrulayın; kayıt silindiyse modülü sıfırlayıp yeniden eşleştirin |
+| Eşleşmiş modül sürekli **1 Hz yavaş** yanıp sönüyor | AP kapalı, Wi-Fi sinyali yetersiz, panel kapalı, bina SSID/şifresi değişmiş ya da kayıt panelden silinmiş | AP ve paneli kontrol edin; AP'de istemci izolasyonunun kapalı olduğunu doğrulayın; kayıt silindiyse modülü sıfırlayıp yeniden eşleştirin |
 | Kapı açma butonunda modül **3 s orta hızda** yanıp sönüyor | Panel kapalı veya AP bağlantısı kesilmiş | Panel beslemesini ve AP ağ bağlantısını kontrol edin |
 | `*` komutları anında **1 s hızlı** hata veriyor, panel **seyrek tek flaş** yapıyor | Yanlış şifre kilidi | Kilit süresinin bitmesini bekleyin (en fazla 15 dk) |
 | Panel **seyrek tek flaş** yapıyor ama şifreler çalışıyor | Panel bina Wi-Fi ağına bağlı değil | AP'yi kontrol edin; SSID veya parola değiştiyse portalı açıp (Bölüm 1.2) yeniden kaydedin |
