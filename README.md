@@ -10,10 +10,12 @@ Wi-Fi with authenticated, encrypted UDP (AES-CCM, X25519 + HKDF pairing); there 
 | Path | Content |
 | :--- | :--- |
 | `firmware/panel`, `firmware/unit` | ESP-IDF projects of the panel and the apartment module |
-| `components/` | Shared components: protocol & crypto, NVS storage, Wi-Fi/UDP, LED, relay / watchdog helpers, Kconfig |
+| `components/` | Shared components: protocol & crypto, request / ACK transport, keypad grammar, NVS storage, Wi-Fi / UDP, LED, relay / watchdog helpers, Kconfig |
+| `firmware/version.txt` | Firmware version of both roles (`PROJECT_VER`, also carried in the protocol) |
+| `firmware/sdkconfig.defaults` | ESP-IDF settings of both roles (each project is its role; role settings in `firmware/<role>/main/Kconfig.projbuild`) |
 | `firmware/sdkconfig.burn`, `firmware/partitions_burn.csv` | Burn profile overlay and partition table ([ADR 0015](docs/adr/0015-production-security-hardening.md)) |
 | `flasher/` | Tk GUI: configure, build, flash / burn, serial monitor (`run_flasher.bat` on Windows) |
-| `tools/` | Host protocol test vectors, NVS record packer, building-AP broadcast check |
+| `tools/` | Host protocol test vectors, NVS record packer, Burn build check, building-AP broadcast check |
 | `docs/` | Protocol specification, ADRs, production checklist, design review |
 
 ## Build and flash
@@ -27,7 +29,8 @@ Requirements: ESP-IDF **v6.1** (EIM install) and an ESP32-D0WD-V3 (rev v3.x) boa
 3. On the device card select the image and click **Flash** (or **Burn**). Flashing erases the chip and writes the
    firmware together with the panel's admin / user codes and optional building Wi-Fi from the card.
 
-Plain ESP-IDF works too: `idf.py -C firmware/panel build` (the flasher additionally writes the codes and Wi-Fi).
+Plain ESP-IDF works too: `idf.py -C firmware/panel build` (the flasher additionally writes the codes and Wi-Fi). The
+resolved `sdkconfig` lives in `firmware/<role>/build/`, the same one the flasher's Production build uses.
 
 ## Documentation
 
@@ -42,8 +45,11 @@ Plain ESP-IDF works too: `idf.py -C firmware/panel build` (the flasher additiona
 
 - `python tools/verify_protocol_vectors.py` — host test vectors for the NVS records, AEAD framing, pairing KDF,
   keypad grammar and challenge flow (needs `cryptography`).
-- `test/host_unit` — Unity tests of the protocol and captive-DNS code on the ESP-IDF `linux` target:
+- `test/host_unit` — Unity tests of the protocol, keypad grammar, NVS storage and captive-DNS code on the ESP-IDF
+  `linux` target:
   `idf.py --preview -C test/host_unit set-target linux build`, then run `test/host_unit/build/doorbell_host_unit.elf`.
-- CI (`.github/workflows/ci.yml`) builds both firmwares, runs the host tests and the Python checks on every push to
-  `master` and on pull requests.
+- `python tools/check_burn_build.py firmware/panel` — after a Burn-profile build: signs it with a throw-away key
+  through the flasher's code and verifies the security options, layout and signatures.
+- CI (`.github/workflows/ci.yml`) builds both firmwares in both profiles, runs the host tests, the Burn check, the
+  C formatting check and the Python checks on every push to `master` and on pull requests.
 - `pre-commit run --all-files` — formatting and lint (astyle with the ESP-IDF style, ruff); see `.pre-commit-config.yaml`.

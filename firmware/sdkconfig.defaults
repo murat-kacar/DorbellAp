@@ -1,11 +1,11 @@
-# DorbellAp Apartment Module (Indoor Unit) - only the deviations from the ESP-IDF v6.1 defaults (AGENTS.md I-70).
+# DorbellAp firmware (entrance panel and apartment module) - only the deviations from the ESP-IDF v6.1 defaults
+# (AGENTS.md I-70). Both projects use this file (firmware/<role>/CMakeLists.txt); the role is the project itself.
 #
 # Relied-upon ESP-IDF defaults (not repeated here; do not change in menuconfig): 2 MB flash, single factory app
 # partition (no OTA, ADR 0013), 160 MHz CPU, brownout detector, interrupt WDT 300 ms, task WDT enabled with a 5 s
-# timeout, DHCP ARP check of the offered address.
-CONFIG_DOORBELL_ROLE_UNIT=y
+# timeout, DHCP ARP check of the offered address, SoftAP WPA3-SAE support (panel setup portal).
 
-# Release build (-Os), same as the panel
+# Release build (-Os): the -Og default leaves the panel app with only ~8 % of the 1 MB slot
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
 # Restart on a hung task instead of only logging it (I-46)

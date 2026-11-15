@@ -2,9 +2,12 @@
 #   idf.py --preview set-target linux && idf.py build && ./build/doorbell_host_unit.elf
 cmake_minimum_required(VERSION 3.22)
 
-# Only the components under test (doorbell_common & co. need ESP32 hardware)
+# Only the components under test (doorbell_common & co. need ESP32 hardware). doorbell_storage runs on ESP-IDF's
+# emulated flash: the linux esp_partition reads build/partition_table/partition-table.bin (default table with nvs).
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components/doorbell_protocol"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/doorbell_keypad"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/doorbell_storage"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/doorbell_captive_dns")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

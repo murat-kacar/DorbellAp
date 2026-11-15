@@ -12,7 +12,10 @@ PROJECT_ROOT = FLASHER_DIR.parent
 BUILDS_DIR = FLASHER_DIR / "builds"
 PANEL_FW_DIR = PROJECT_ROOT / "firmware" / "panel"
 UNIT_FW_DIR = PROJECT_ROOT / "firmware" / "unit"
-KCONFIG_PROJBUILD_PATH = PROJECT_ROOT / "components" / "doorbell_common" / "Kconfig.projbuild"
+# Shared settings, plus each firmware's own role settings (the ESP-IDF project is the role)
+KCONFIG_COMMON_PATH = PROJECT_ROOT / "components" / "doorbell_common" / "Kconfig.projbuild"
+FIRMWARE_DIR = PROJECT_ROOT / "firmware"
+SDKCONFIG_DEFAULTS_PATH = FIRMWARE_DIR / "sdkconfig.defaults"
 
 # Classic ESP32 GPIO rules (I-49)
 ESP32_FLASH_GPIOS = {6, 7, 8, 9, 10, 11}
@@ -79,8 +82,8 @@ GPIO_DIRECTION = {
     "DOORBELL_UNIT_GPIO_RESET_BTN": "in",
 }
 STRING_MAX_LEN = {"DOORBELL_PANEL_KEY_MAP": 12, "DOORBELL_WIFI_COUNTRY_CODE": 2}
-# Not in the form: the role choice, the blank-NVS fallback codes (derived per build from the code lengths) and the
-# fallback Wi-Fi (Flash writes the card's Wi-Fi into NVS)
+# Not in the form: the blank-NVS fallback codes (derived per build from the code lengths) and the fallback Wi-Fi (Flash
+# writes the card's Wi-Fi into NVS)
 HIDDEN_KCONFIG = {
     "DOORBELL_PANEL_DEFAULT_ADMIN_CODE",
     "DOORBELL_PANEL_DEFAULT_USER_CODE",
@@ -89,25 +92,30 @@ HIDDEN_KCONFIG = {
 }
 
 
-def load_param_specs(kconfig_path: Path, role_symbol: str) -> list[ParamSpec]:
-    """Form parameters of one role, read with ESP-IDF's Kconfig library in menu order.
+def load_param_specs(kconfig_paths: list[Path]) -> list[ParamSpec]:
+    """Form parameters of one firmware (its Kconfig files in order), read with ESP-IDF's Kconfig library in menu order.
 
-    Two evaluations: `kconf` with only the role selected gives the real values; `opts_on` additionally switches on
-    every ordinary bool option, so an option that depends on another option (e.g. the country code on "set country")
-    is still listed with its own default and range, while options that depend on the other role drop out.
+    Two evaluations: `kconf` gives the real defaults; `opts_on` switches on every ordinary bool option, so an option
+    that depends on another option (e.g. the country code on "set country") is still listed with its own default and
+    range.
     """
+    import tempfile
+
     from esp_kconfiglib import core as kconf_lib
 
-    def load(all_bools_on: bool) -> Any:
-        k = kconf_lib.Kconfig(str(kconfig_path), warn=False)
-        k.syms[role_symbol].set_value("y")
-        if all_bools_on:
-            for sym in k.unique_defined_syms:
-                if sym.type == kconf_lib.BOOL and sym.choice is None:
-                    sym.set_value("y")
-        return k
+    with tempfile.TemporaryDirectory(prefix="dorbellap_kconfig_") as tmp:
+        top = Path(tmp) / "Kconfig"
+        top.write_text("".join(f'source "{p.as_posix()}"\n' for p in kconfig_paths), encoding="utf-8")
 
-    kconf, opts_on = load(False), load(True)
+        def load(all_bools_on: bool) -> Any:
+            k = kconf_lib.Kconfig(str(top), warn=False)
+            if all_bools_on:
+                for sym in k.unique_defined_syms:
+                    if sym.type == kconf_lib.BOOL and sym.choice is None:
+                        sym.set_value("y")
+            return k
+
+        kconf, opts_on = load(False), load(True)
     kinds = {kconf_lib.BOOL: "bool", kconf_lib.INT: "int", kconf_lib.HEX: "int", kconf_lib.STRING: "str"}
     specs: list[ParamSpec] = []
 
@@ -163,5 +171,5 @@ INTEROP_KCONFIG_KEYS = (
     "DOORBELL_HEARTBEAT_ENABLED",
 )
 
-PANEL_PARAMS = load_param_specs(KCONFIG_PROJBUILD_PATH, "DOORBELL_ROLE_PANEL")
-APARTMENT_PARAMS = load_param_specs(KCONFIG_PROJBUILD_PATH, "DOORBELL_ROLE_UNIT")
+PANEL_PARAMS = load_param_specs([KCONFIG_COMMON_PATH, PANEL_FW_DIR / "main" / "Kconfig.projbuild"])
+APARTMENT_PARAMS = load_param_specs([KCONFIG_COMMON_PATH, UNIT_FW_DIR / "main" / "Kconfig.projbuild"])

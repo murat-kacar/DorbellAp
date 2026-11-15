@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_timer.h"
@@ -11,14 +12,17 @@ extern "C" {
 
 /**
  * @brief Boot-safe relay controller with one-shot timer and main-loop safety clamp (I-22).
+ *
+ * is_active and deadline_us are written and read only under the relay lock (portMUX, AGENTS.md §7); read the state
+ * with doorbell_relay_is_active(), never the field.
  */
 typedef struct {
     gpio_num_t gpio_num;
     int active_level;
     int inactive_level;
     uint32_t pulse_ms;
-    volatile bool is_active;
-    volatile int64_t deadline_us;
+    bool is_active;
+    int64_t deadline_us;
     esp_timer_handle_t timer;
     void (*on_deenergize)(void *ctx);
     void *cb_ctx;
@@ -44,6 +48,11 @@ esp_err_t doorbell_relay_init(doorbell_relay_t *relay,
 esp_err_t doorbell_relay_trigger(doorbell_relay_t *relay, bool *already_active_out);
 
 /**
+ * @brief Whether the relay is currently energized.
+ */
+bool doorbell_relay_is_active(doorbell_relay_t *relay);
+
+/**
  * @brief Force de-energize the relay immediately.
  */
 void doorbell_relay_force_off(doorbell_relay_t *relay);
@@ -54,12 +63,6 @@ void doorbell_relay_force_off(doorbell_relay_t *relay);
  */
 void doorbell_relay_safety_check(doorbell_relay_t *relay);
 
-/**
- * @brief Return a human-readable English description of an esp_reset_reason_t code (I-58, I-68).
- */
-const char *doorbell_reset_reason_str(uint8_t reason);
-
 #ifdef __cplusplus
 }
 #endif
-

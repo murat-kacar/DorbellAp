@@ -101,9 +101,13 @@ class DoorbellFlasherApp(BuildMixin, DeviceMixin):
             else:
                 self.unit_vars[spec.kconfig] = tk.StringVar(value=str(spec.default))
 
-        # Load current values from firmware/panel/sdkconfig and firmware/unit/sdkconfig if present
-        self._load_existing_sdkconfig(PANEL_FW_DIR / "sdkconfig", PANEL_PARAMS, self.panel_vars)
-        self._load_existing_sdkconfig(UNIT_FW_DIR / "sdkconfig", APARTMENT_PARAMS, self.unit_vars)
+        # Start from the settings of the last Production build: build/sdkconfig is the project's one sdkconfig (also of
+        # a plain `idf.py build`, firmware/<role>/CMakeLists.txt)
+        for fw_dir, specs, vars_map in (
+            (PANEL_FW_DIR, PANEL_PARAMS, self.panel_vars),
+            (UNIT_FW_DIR, APARTMENT_PARAMS, self.unit_vars),
+        ):
+            self._load_existing_sdkconfig(fw_dir / "build" / "sdkconfig", specs, vars_map)
 
     @staticmethod
     def _load_existing_sdkconfig(
@@ -360,7 +364,7 @@ class DoorbellFlasherApp(BuildMixin, DeviceMixin):
                 ).grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=(6, 0), pady=(8, 2))
                 row_idx += 1
 
-                if current_section == "GPIO":
+                if current_section.startswith("GPIO"):
                     note = tk.Label(
                         self.cfg_inner,
                         text="ESP32: GPIO 6-11 are used by flash; GPIO 34-39 are input-only without pull-ups.",

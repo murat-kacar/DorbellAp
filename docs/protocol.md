@@ -49,7 +49,7 @@ tag**.
 | `2` | `msg_type` | `uint8_t` | 1 B | Message type identifier (Section 3) |
 | `3` | `flags` | `uint8_t` | 1 B | Bit 0: `direction` (`0` = Panel→Unit, `1` = Unit→Panel)<br>Bit 1: `is_retry` (`1` on retransmission)<br>Bit 2: `is_bcast` (`1` if sent to `255.255.255.255`)<br>Bits 3–7: Reserved (`0`) |
 | `4` | `src_id` | `uint8_t` | 1 B | Sender ID: `0` = Panel, `1..254` = Apartment number |
-| `5` | `dst_id` | `uint8_t` | 1 B | Destination ID: `0` = Panel, `1..254` = Apartment number, `255` = All units (`PANEL_ANNOUNCE`) |
+| `5` | `dst_id` | `uint8_t` | 1 B | Destination ID: `0` = Panel, `1..254` = Apartment number (`255` is reserved: every apartment has its own key, so no frame can address all units) |
 | `6..7` | `seq_id` | `uint16_t` | 2 B | Transaction sequence ID matching a request to its `ACK` |
 | `8..11` | `tx_counter`| `uint32_t` | 4 B | Sender's strictly monotonic frame counter (`1 .. 0xFFFFFFFE`) |
 
@@ -78,7 +78,7 @@ Byte:   0                  1        2        3..4     5..8        9..12
 Before invoking `psa_aead_decrypt()`, the receiver MUST perform these fast cleartext checks in order:
 1. Verify packet length $\ge 28$ bytes ($12\text{ B header} + 16\text{ B tag}$) and `magic == 0xDB`.
 2. **Destination filter (`I-53`):**
-   - On an **Apartment Module (`my_apt_no`):** If `dst_id != my_apt_no` and `dst_id != 255`, silently drop the packet
+   - On an **Apartment Module (`my_apt_no`):** If `dst_id != my_apt_no`, silently drop the packet
      **without** decrypting and **without** incrementing `rejected_messages`. (This prevents broadcast retries for other
      apartments from polluting `rejected_messages`).
    - On the **Panel (`id == 0`):** Require `dst_id == 0`, `direction == 1`, and `src_id` within configured apartment

@@ -1,0 +1,98 @@
+# Apartment module settings. Shared settings (network, heartbeat, status LED) are in
+# components/doorbell_common/Kconfig.projbuild; the flasher builds its form from both files.
+menu "Doorbell apartment module"
+
+    menu "GPIO (Classic ESP32)"
+
+        config DOORBELL_UNIT_GPIO_BELL_RELAY
+            int "Bell relay GPIO"
+            range 0 33
+            default 4
+        config DOORBELL_UNIT_BELL_RELAY_ACTIVE_HIGH
+            bool "Bell relay is driven HIGH to ring"
+            default y
+        config DOORBELL_UNIT_GPIO_DOOR_BTN
+            int "Door-open button GPIO"
+            range 0 39
+            default 23
+        config DOORBELL_UNIT_GPIO_PAIR_BTN
+            int "Hidden pairing button GPIO"
+            range 0 39
+            default 18
+        config DOORBELL_UNIT_GPIO_RESET_BTN
+            int "Hidden reset button GPIO"
+            range 0 39
+            default 19
+        config DOORBELL_UNIT_BTNS_ACTIVE_LOW
+            bool "Buttons pull the GPIO LOW when pressed"
+            default y
+        config DOORBELL_UNIT_BTNS_INTERNAL_PULL
+            bool "Enable the internal pull resistors"
+            default y
+        config DOORBELL_UNIT_GPIO_STATUS_LED
+            int "Status LED GPIO"
+            range 0 33
+            default 2
+
+    endmenu
+
+    menu "Bell"
+
+        config DOORBELL_UNIT_BELL_PULSE_MS
+            int "Bell relay pulse (ms)"
+            range 100 10000
+            default 500
+
+        config DOORBELL_UNIT_VISUAL_BELL
+            bool "Blink the status LED while ringing"
+            default y
+
+    endmenu
+
+    menu "Buttons"
+
+        config DOORBELL_UNIT_DOOR_BTN_MIN_MS
+            int "Door button minimum press (ms)"
+            range 20 2000
+            default 100
+
+        config DOORBELL_UNIT_DOOR_BTN_MAX_S
+            int "Door button maximum press (s)"
+            range 5 120
+            default 30
+
+        config DOORBELL_UNIT_HOLD_BTN_MIN_S
+            int "Pairing/reset button minimum hold (s)"
+            range 3 20
+            default 7
+
+        config DOORBELL_UNIT_HOLD_BTN_MAX_S
+            int "Pairing/reset button maximum hold (s)"
+            range 5 30
+            default 12
+
+        config DOORBELL_UNIT_HOLD_BTN_CANCEL_S
+            int "Pairing/reset button cancel after (s)"
+            range 8 65
+            default 15
+
+    endmenu
+
+    menu "Other"
+
+        config DOORBELL_HEARTBEAT_RETRIES
+            int "HEARTBEAT retries without ACK"
+            depends on DOORBELL_HEARTBEAT_ENABLED
+            range 0 5
+            default 1
+            help
+                Number of retransmission attempts for HEARTBEAT_REQ when no HEARTBEAT_ACK arrives.
+
+        config DOORBELL_UNIT_OPEN_DOOR_RETRIES
+            int "OPEN_DOOR retries without ACK"
+            range 0 5
+            default 1
+
+    endmenu
+
+endmenu

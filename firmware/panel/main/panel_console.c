@@ -3,6 +3,7 @@
 #include <string.h>
 #include "esp_console.h"
 #include "linenoise/linenoise.h"
+#include "esp_check.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -23,7 +24,7 @@ static int cmd_doorbell_status(int argc, char **argv)
     doorbell_net_get_sta_telemetry(&rssi, &ch, bssid, &disconn);
 
     uint32_t reg_count = 0;
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    panel_lock();
     for (int i = CONFIG_DOORBELL_PANEL_MIN_APT_NO; i <= CONFIG_DOORBELL_PANEL_MAX_APT_NO; i++) {
         if (g_apt_slots[i].nvs.registered) {
             reg_count++;
@@ -32,7 +33,7 @@ static int cmd_doorbell_status(int argc, char **argv)
     char ssid[33];
     strncpy(ssid, g_panel_cfg.wifi_ssid, sizeof(ssid));
     ssid[32] = '\0';
-    xSemaphoreGive(g_panel_mutex);
+    panel_unlock();
 
     printf("Panel Mode       : %d\n", (int)g_panel_mode);
     printf("Configured SSID  : %s\n", ssid[0] ? ssid : "(none)");
@@ -91,9 +92,9 @@ static int cmd_doorbell_wifi(int argc, char **argv)
     }
 
     /* Commit to NVS first, then to RAM: a failed save must leave the active credentials unchanged */
-    xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+    panel_lock();
     if (g_panel_mode != MODE_IDLE) {
-        xSemaphoreGive(g_panel_mutex);
+        panel_unlock();
         printf("Error: panel became busy; credentials not changed.\n");
         return 1;
     }
@@ -107,7 +108,7 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         g_panel_cfg = next;
     }
     mbedtls_platform_zeroize(&next, sizeof(next));
-    xSemaphoreGive(g_panel_mutex);
+    panel_unlock();
 
     if (err != ESP_OK) {
         printf("Error: failed to save Wi-Fi credentials to NVS (%s).\n", esp_err_to_name(err));
@@ -141,7 +142,7 @@ esp_err_t panel_console_init(void)
         .hint = NULL,
         .func = &cmd_doorbell_status,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&status_cmd));
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&status_cmd), TAG, "register doorbell_status");
 
     const esp_console_cmd_t wifi_cmd = {
         .command = "doorbell_wifi",
@@ -149,8 +150,7 @@ esp_err_t panel_console_init(void)
         .hint = "<admin_code> <ssid> [password]",
         .func = &cmd_doorbell_wifi,
     };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&wifi_cmd));
+    ESP_RETURN_ON_ERROR(esp_console_cmd_register(&wifi_cmd), TAG, "register doorbell_wifi");
 
     return esp_console_start_repl(repl);
 }
-

@@ -19,7 +19,7 @@
 
 | # | Fact | Source |
 | :--- | :--- | :--- |
-| F1 | The setup portal SoftAP is WPA3-SAE with the admin code as passphrase; an IEEE 802.11 passphrase is 8–63 characters, hence the minimum of 8 digits | `components/doorbell_common/Kconfig.projbuild`, `AGENTS.md` (`I-4`) |
+| F1 | The setup portal SoftAP is WPA3-SAE with the admin code as passphrase; an IEEE 802.11 passphrase is 8–63 characters, hence the minimum of 8 digits | `firmware/panel/main/Kconfig.projbuild`, `AGENTS.md` (`I-4`) |
 | F2 | Codes are stored in fixed 12-byte fields (`doorbell_panel_cfg_blob_t`), enough for 10 digits + NUL | `components/doorbell_storage/include/doorbell_storage.h` |
 | F3 | The built-in blank-NVS fallback codes must match the configured lengths; checked with `static_assert` | `components/doorbell_common/include/doorbell_config_checks.h` |
 

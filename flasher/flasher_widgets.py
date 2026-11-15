@@ -445,7 +445,9 @@ class DeviceCard(ttk.LabelFrame):
         self._burned = True
         self._update_buttons_for_firmware()
         self.btn_flash.configure(state=tk.DISABLED)
-        self.chip_info_var.set(self.chip_info_var.get() + " | BURNED (locked)")
+        cur = self.chip_info_var.get()
+        if "BURNED" not in cur:
+            self.chip_info_var.set(f"{cur} | BURNED (locked)" if cur else "ESP32 | BURNED (locked)")
 
     def _on_role_changed(self, _event: tk.Event | None = None) -> None:
         role = self.role_var.get()
@@ -521,9 +523,9 @@ class DeviceCard(ttk.LabelFrame):
         if detected_role is None:
             messagebox.showerror(
                 "Unsupported Firmware Image",
-                f"'{fw_path.name}' is not a complete flasher image (bootloader @0x1000, partition table @0x8000, "
-                "app @0x10000). Flash erases the whole chip, so only complete images are accepted. Nothing was "
-                "flashed.",
+                f"'{fw_path.name}' is not a complete image built by this flasher (bootloader @0x1000, partition "
+                "table, factory app and the build-info file next to it; rebuild older images). Flash erases the "
+                "whole chip, so only complete images are accepted. Nothing was flashed.",
             )
             return
         selected_role = self.role_var.get()

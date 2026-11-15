@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "driver/gpio.h"
 
@@ -8,50 +10,44 @@ extern "C" {
 #endif
 
 /**
- * @brief Panel Status LED Priority States (docs/protocol.md §7.1, 0 = highest priority).
+ * @brief Status LED patterns (docs/protocol.md §7). Timings and brightness come from the shared "Doorbell status LED"
+ *        Kconfig menu; each firmware maps its indication states to these patterns.
  */
 typedef enum {
-    LED_PANEL_KEY_PRESS = 0,   /* 50 ms single short flash (one-shot) */
-    LED_PANEL_DOOR_OPEN,       /* Solid ON for door relay pulse (one-shot) */
-    LED_PANEL_RESULT_OK,       /* Solid ON for 2000 ms (one-shot) */
-    LED_PANEL_RESULT_ERR,      /* Fast blink 200 ms period for 1000 ms (one-shot) */
-    LED_PANEL_NO_RESPONSE,     /* Medium blink 500 ms period for 3000 ms (one-shot) */
-    LED_PANEL_RESET_HOLD,      /* 900 ms ON / 100 ms OFF while reset button held 10-60 s */
-    LED_PANEL_TYPING,          /* Slow blink 1 Hz while keypad buffer non-empty */
-    LED_PANEL_PAIRING,         /* Repeating double flash during pairing discovery/completion */
-    LED_PANEL_PORTAL,          /* Slow blink 1 Hz while setup web portal is open */
-    LED_PANEL_LOCKOUT,         /* Sparse single flash (3000 ms) during keypad lockout */
-    LED_PANEL_NET_LOST,        /* Sparse single flash (3000 ms) when STA disconnected from AP */
-    LED_PANEL_IDLE,            /* OFF (0%) steady state */
-    LED_PANEL_MAX
-} doorbell_panel_led_state_t;
+    DOORBELL_LED_OFF = 0,          /**< dark; for the lowest-priority idle state */
+    DOORBELL_LED_SOLID,            /**< full brightness; one-shot with a duration, else held until stopped */
+    DOORBELL_LED_DIM,              /**< dim brightness, held until stopped */
+    DOORBELL_LED_SHORT_FLASH,      /**< one short flash (key press), one-shot */
+    DOORBELL_LED_FAST_BLINK,       /**< fast blink period */
+    DOORBELL_LED_MEDIUM_BLINK,     /**< medium blink period */
+    DOORBELL_LED_SLOW_BLINK,       /**< slow blink period (1 Hz) */
+    DOORBELL_LED_DOUBLE_FLASH,     /**< repeating double flash */
+    DOORBELL_LED_TRIPLE_FLASH,     /**< repeating triple flash */
+    DOORBELL_LED_SPARSE_FLASH,     /**< single flash every sparse period */
+    DOORBELL_LED_LONG_ON_SHORT_OFF, /**< 900 ms on / 100 ms off (hidden-button hold) */
+} doorbell_led_pattern_t;
+
+/** One indication state: a pattern and, for timed one-shots, how long it lasts (0 = until stopped / natural end) */
+typedef struct {
+    doorbell_led_pattern_t pattern;
+    uint32_t duration_ms;
+} doorbell_led_indication_t;
 
 /**
- * @brief Apartment Module Status LED Priority States (docs/protocol.md §7.2, 0 = highest priority).
+ * @brief Create the status LED (espressif/led_indicator on LEDC).
+ *
+ * @param table  indication states in priority order (index 0 = highest priority); copied, may be temporary
+ * @param count  number of states
+ * @param initial_state state started right away, or -1 for none
  */
-typedef enum {
-    LED_UNIT_RINGING = 0,      /* Fast blink 200 ms period during bell relay pulse (one-shot) */
-    LED_UNIT_BTN_CANCEL,       /* Repeating triple flash for 2000 ms on >= 15 s hold or invalid combo (one-shot) */
-    LED_UNIT_PAIR_HOLD,        /* Medium blink 500 ms period while pairing button held 7-12 s */
-    LED_UNIT_RESET_HOLD,       /* 900 ms ON / 100 ms OFF while reset button held 7-12 s */
-    LED_UNIT_RESULT_OK,        /* Full brightness solid ON for 2000 ms (one-shot) */
-    LED_UNIT_NO_RESPONSE,      /* Medium blink 500 ms period for 3000 ms (one-shot) */
-    LED_UNIT_PAIRING_SEARCH,   /* Slow blink 1 Hz while searching/completing pairing */
-    LED_UNIT_UNPAIRED,         /* Repeating double flash when unpaired */
-    LED_UNIT_OUT_OF_COV,       /* Sparse single flash (3000 ms) when disconnected or 3 missed HEARTBEAT_ACKs */
-    LED_UNIT_IN_COVERAGE,      /* Dim solid (10%) when paired, connected, and panel reachable */
-    LED_UNIT_MAX
-} doorbell_unit_led_state_t;
+esp_err_t doorbell_led_init(gpio_num_t gpio_num, const doorbell_led_indication_t *table, size_t count,
+                            int initial_state);
 
-esp_err_t doorbell_led_panel_init(gpio_num_t gpio_num);
-void doorbell_led_panel_start(doorbell_panel_led_state_t state);
-void doorbell_led_panel_stop(doorbell_panel_led_state_t state);
-
-esp_err_t doorbell_led_unit_init(gpio_num_t gpio_num);
-void doorbell_led_unit_start(doorbell_unit_led_state_t state);
-void doorbell_led_unit_stop(doorbell_unit_led_state_t state);
+/** Start indication @p state (an index into the init table). Safe from any task or esp_timer callback. */
+void doorbell_led_start(int state);
+/** Stop indication @p state; the highest-priority other active state shows. */
+void doorbell_led_stop(int state);
 
 #ifdef __cplusplus
 }
 #endif
-

@@ -81,16 +81,29 @@ Normative companion specifications:
   - Repository layout:
     - `firmware/panel` — Building entrance panel (door station)
     - `firmware/unit` — Apartment module (indoor unit)
+    - Each ESP-IDF project IS its role: role settings live in `firmware/<role>/main/Kconfig.projbuild` and their
+      compile-time checks in `firmware/<role>/main/<role>_config.h`; shared components contain no role code (no role
+      Kconfig choice, no role `#if`). Role data is passed in (the LED state → pattern table, the panel's blank-NVS
+      defaults). Both projects use `firmware/sdkconfig.defaults` and keep their resolved `sdkconfig` in the build
+      directory (`firmware/<role>/CMakeLists.txt`), so a plain `idf.py build` and the flasher share one configuration.
     - `components/` — Shared components: `doorbell_protocol` (framing, AEAD, pairing KDF), `doorbell_storage` (NVS
-      records), `doorbell_net` (Wi-Fi STA/SoftAP, UDP, network scan), `doorbell_captive_dns` (portal DNS answer
-      builder), `doorbell_led`, `doorbell_common` (Kconfig, relay, watchdog, compile-time checks)
-    - `test/host_unit` — Unity tests of `doorbell_protocol` and `doorbell_captive_dns` built for the ESP-IDF `linux`
-      target; `.github/workflows/ci.yml` builds both firmwares, builds and runs these tests, and runs the Python checks
-      (`tools/verify_protocol_vectors.py`, ruff)
+      records), `doorbell_net` (Wi-Fi STA/SoftAP, UDP sockets, network scan; no protocol knowledge),
+      `doorbell_transport` (dual-path frame send and the confirmable request / ACK transaction loop),
+      `doorbell_keypad` (keypad grammar, pure C), `doorbell_captive_dns` (portal DNS answer builder), `doorbell_led`
+      (status LED pattern engine over `espressif/led_indicator`), `doorbell_common` (shared Kconfig, relay, reset
+      reasons, watchdog, shared compile-time checks, firmware version from `firmware/version.txt`). Logic both roles
+      need for an accepted frame (replay floor / peer address, I-50, I-62) and the ACK cache (I-29) is in
+      `doorbell_protocol` (`doorbell_rx_accept`, `doorbell_dedup_*`). Libraries never feed the task watchdog: blocking
+      helpers take a poll / wait callback in which the calling task feeds it (I-46).
+    - `test/host_unit` — Unity tests of `doorbell_protocol`, `doorbell_keypad`, `doorbell_storage` and
+      `doorbell_captive_dns` (on the emulated NVS partition) built for the ESP-IDF `linux` target;
+      `.github/workflows/ci.yml` builds both firmwares (Production and Burn, the latter signed and verified by
+      `tools/check_burn_build.py` through the flasher's own signing code), builds and runs these tests, checks C
+      formatting (astyle) and runs the Python checks (`tools/verify_protocol_vectors.py`, ruff)
     - `flasher/` — Tk flasher: `flasher_gui.py` (entry point, form, validation), `flasher_config.py` (paths, GPIO
-      rules, form generated from `Kconfig.projbuild`), `flasher_build.py`, `flasher_device.py` (detect, Flash, Burn,
-      Scan), `flasher_images.py` (image / partition / NVS helpers), `flasher_widgets.py`, `flasher_env.py` (ESP-IDF
-      Python re-launch)
+      rules, form generated from the shared and the role `Kconfig.projbuild`), `flasher_build.py`,
+      `flasher_device.py` (detect, Flash, Burn, Scan), `flasher_images.py` (image / partition / NVS helpers, Burn
+      signing shared with CI), `flasher_widgets.py`, `flasher_env.py` (ESP-IDF Python re-launch)
 - **Offline Operation & Partition Table:** No internet connectivity and no OTA updates ([ADR 0013](docs/adr/0013-offline-operation-no-ota.md)). Uses the single
   `factory` application partition table on a 2 MB flash.
 - **Normal Operating Mode & STA Reconnect Policy (`I-11`, `I-35`, `I-38`):**
@@ -190,6 +203,10 @@ Normative companion specifications:
     **`PSA_ALG_HKDF(PSA_ALG_SHA_256)`** as specified in [docs/protocol.md](docs/protocol.md) §1–§3.2.
   - To ensure hardware RNG entropy (`I-26`), the apartment module starts `esp_wifi_start()` at boot and pre-generates
     its X25519 keypair during the 7-second button hold period.
+  - ESP-IDF v6.1 calls `psa_crypto_init()` itself at startup (`mbedtls/port/esp_psa_crypto_init.c`), and with
+    `MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG` every `psa_generate_random()` reads the hardware RNG directly. What I-26 needs
+    is therefore that the radio is running whenever keys or nonces are generated, not a particular init order; the
+    firmware does not call `psa_crypto_init()` (only the `linux` host test does).
 - **Two-Phase Commit & Timing (`I-30`, `I-45`):**
   - The 20-second timer governs the **module discovery window**. Once a single module completes `PAIR_CONFIRM` on the
     SoftAP, the panel closes the SoftAP immediately, holds the registration as **pending in RAM only**, and starts a
@@ -261,7 +278,8 @@ Normative companion specifications:
   - Cross-parameter Kconfig constraints (e.g., `min_hold < max_hold < cancel_after`, `admin_code_len >= 8`, LED step
     $\ge \text{tick}$) MUST be enforced at compile time using C23 `static_assert` in a shared header (`I-66`).
 - **Task Communication:** Flags set in one task or callback and consumed in another are C11 `_Atomic` (consume with
-  `atomic_exchange`); multi-field state stays under its mutex or `portMUX` (relay state); work handed to another
+  `atomic_exchange`); multi-field state stays under its mutex or `portMUX` (relay state). Panel functions named
+  `*_locked` require `g_panel_mutex` and check it with `PANEL_ASSERT_LOCKED()`; work handed to another
   task goes through a FreeRTOS queue (panel ring requests: queue of 4, a full queue drops the request with a log and
   the error LED). Do not add `volatile` for synchronization.
 - **Task Watchdog (TWDT) Architecture (`I-46`):**
@@ -287,6 +305,12 @@ Normative companion specifications:
      key scheme, `CONFIG_ESP32_REV_MIN_3`) and the partition table `firmware/partitions_burn.csv` (table at
      `0x10000`, `nvs`, encrypted `nvs_keys`, factory app at `0x20000`). It builds in `firmware/<role>/build_burn/`
      and never touches the Production build state. ADR 0015.
+  8. The flasher never edits an `sdkconfig`: each profile builds in its own directory (`build/`, `build_burn/`)
+     with the standard ESP-IDF layering `SDKCONFIG_DEFAULTS="firmware/sdkconfig.defaults;<build>/sdkconfig.flasher
+     [;firmware/sdkconfig.burn]"` (`sdkconfig.flasher` = the GUI settings), exactly as CI builds. The `sdkconfig` is
+     regenerated whenever a layer changed (content hash) and kept otherwise, so unchanged builds stay incremental.
+     Image offsets and flash settings come from the build's `flasher_args.json` (recorded in the image's build-info
+     sidecar, which Flash requires) and the image's partition table.
 
 ---
 

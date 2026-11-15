@@ -43,7 +43,7 @@ static bool portal_take_mutex_or_abort(void)
         }
     }
     if (s_portal_abort) {
-        xSemaphoreGive(g_panel_mutex);
+        panel_unlock();
         return false;
     }
     return true;
@@ -158,7 +158,7 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     memcpy(current_ssid, g_panel_cfg.wifi_ssid, sizeof(current_ssid) - 1);
-    xSemaphoreGive(g_panel_mutex);
+    panel_unlock();
 
     doorbell_net_ap_info_t nets[DOORBELL_NET_SCAN_MAX];
     uint32_t gen = 0;
@@ -189,15 +189,15 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
              scanning ? "<meta http-equiv=\"refresh\" content=\"3\">" : "");
     httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
     httpd_resp_send_chunk(req,
-        "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px;}"
-        "label{display:block;margin-top:14px;font-weight:bold;}"
-        "input{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}"
-        "label.n{font-weight:normal;margin-top:6px;padding:6px 0;border-bottom:1px solid #ddd;}"
-        "label.n input{width:auto;margin:0 8px 0 0;}"
-        "small{color:#666;}.x{color:#b33;}"
-        "button{margin-top:18px;width:100%;padding:10px;font-size:16px;}</style></head>"
-        "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
-        "<form method=\"POST\" action=\"/save\">", HTTPD_RESP_USE_STRLEN);
+                          "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px;}"
+                          "label{display:block;margin-top:14px;font-weight:bold;}"
+                          "input{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}"
+                          "label.n{font-weight:normal;margin-top:6px;padding:6px 0;border-bottom:1px solid #ddd;}"
+                          "label.n input{width:auto;margin:0 8px 0 0;}"
+                          "small{color:#666;}.x{color:#b33;}"
+                          "button{margin-top:18px;width:100%;padding:10px;font-size:16px;}</style></head>"
+                          "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
+                          "<form method=\"POST\" action=\"/save\">", HTTPD_RESP_USE_STRLEN);
     snprintf(row, sizeof(row),
              "<input type=\"hidden\" name=\"gen\" value=\"%lu\"><label>Bina Wi-Fi ağını seçin:</label>",
              (unsigned long)gen);
@@ -205,12 +205,15 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
 
     if (count == 0) {
         httpd_resp_send_chunk(req, scanning ? "<p>Ağlar taranıyor, lütfen bekleyin…</p>"
-                                            : "<p>Ağ bulunamadı. Yeniden tarayın veya adı aşağıya yazın.</p>",
+                              : "<p>Ağ bulunamadı. Yeniden tarayın veya adı aşağıya yazın.</p>",
                               HTTPD_RESP_USE_STRLEN);
     }
     for (size_t i = 0; i < count; i++) {
         html_escape(nets[i].ssid, esc, sizeof(esc));
-        const char *bars = nets[i].rssi >= -60 ? "▂▄▆█" : nets[i].rssi >= -70 ? "▂▄▆" : nets[i].rssi >= -80 ? "▂▄" : "▂";
+        const char *bars = nets[i].rssi >= -60 ? "▂▄▆█"
+                           : nets[i].rssi >= -70 ? "▂▄▆"
+                           : nets[i].rssi >= -80 ? "▂▄"
+                           : "▂";
         /* 802.11b-only station (CONFIG_DOORBELL_WIFI_STA_11B_ONLY): an AP without 11b rates cannot be joined */
         bool usable = nets[i].supports_11b;
         snprintf(row, sizeof(row),
@@ -233,13 +236,15 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
 
     /* Never echo the stored passphrase (I-47) */
     httpd_resp_send_chunk(req,
-        "<label>Bina Wi-Fi şifresi (WPA2/WPA3):</label>"
-        "<input type=\"password\" name=\"password\" maxlength=\"63\" placeholder=\"Şifreyi girin (açık ağda boş)\">"
-        "<button type=\"submit\">Kaydet ve Bağlan</button></form>"
-        "<p><a href=\"/scan\">Ağları yeniden tara</a></p>"
-        "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
-        "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, 1 sn hızlı yanıp sönme = başarısız.</p>"
-        "</body></html>", HTTPD_RESP_USE_STRLEN);
+                          "<label>Bina Wi-Fi şifresi (WPA2/WPA3):</label>"
+                          "<input type=\"password\" name=\"password\" maxlength=\"63\" "
+                          "placeholder=\"Şifreyi girin (açık ağda boş)\">"
+                          "<button type=\"submit\">Kaydet ve Bağlan</button></form>"
+                          "<p><a href=\"/scan\">Ağları yeniden tara</a></p>"
+                          "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
+                          "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, "
+                          "1 sn hızlı yanıp sönme = başarısız.</p>"
+                          "</body></html>", HTTPD_RESP_USE_STRLEN);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
@@ -316,13 +321,13 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, NULL);
         if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen || !nets[idx].supports_11b) {
             mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
-            doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+            doorbell_led_start(LED_PANEL_RESULT_ERR);
             httpd_resp_set_type(req, "text/html; charset=utf-8");
             httpd_resp_sendstr(req,
-                "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                "<body><h3>Ağ listesi değişti veya seçilen ağ uyumsuz.</h3>"
-                "<p>Listeden ağı yeniden seçin.</p><p><a href=\"/\">Geri dön</a></p></body></html>");
+                               "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                               "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                               "<body><h3>Ağ listesi değişti veya seçilen ağ uyumsuz.</h3>"
+                               "<p>Listeden ağı yeniden seçin.</p><p><a href=\"/\">Geri dön</a></p></body></html>");
             return ESP_OK;
         }
         memset(new_ssid, 0, sizeof(new_ssid));
@@ -334,12 +339,12 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     size_t pass_len = strlen(new_pass);
     if (!fields_ok || ssid_len == 0 || ssid_len > 32 || (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
         mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
-        doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+        doorbell_led_start(LED_PANEL_RESULT_ERR);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
         httpd_resp_sendstr(req,
-            "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\"></head>"
-            "<body><h3>Hata: Wi-Fi adı 1-32 karakter, şifre ise 8-63 karakter olmalıdır.</h3>"
-            "<p><a href=\"/\">Geri dön</a></p></body></html>");
+                           "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\"></head>"
+                           "<body><h3>Hata: Wi-Fi adı 1-32 karakter, şifre ise 8-63 karakter olmalıdır.</h3>"
+                           "<p><a href=\"/\">Geri dön</a></p></body></html>");
         return ESP_OK;
     }
 
@@ -396,29 +401,30 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
             }
             s_sta_cfg_untested = false;
             s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
-            xSemaphoreGive(g_panel_mutex);
+            panel_unlock();
 
-            doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+            doorbell_led_start(LED_PANEL_RESULT_ERR);
             httpd_resp_set_type(req, "text/html; charset=utf-8");
             return httpd_resp_sendstr(req,
-                "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                "<body><h3>Kayıt hatası!</h3>"
-                "<p>Wi-Fi bağlantısı kuruldu ancak ayarlar kalıcı hafızaya (NVS) kaydedilemedi.</p>"
-                "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+                                      "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                                      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                                      "<body><h3>Kayıt hatası!</h3>"
+                                      "<p>Wi-Fi bağlantısı kuruldu ancak ayarlar "
+                                      "kalıcı hafızaya (NVS) kaydedilemedi.</p>"
+                                      "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
         }
 
         mbedtls_platform_zeroize(prev_pass, sizeof(prev_pass));
         s_sta_cfg_untested = false;
-        xSemaphoreGive(g_panel_mutex);
+        panel_unlock();
 
-        doorbell_led_panel_start(LED_PANEL_RESULT_OK);
+        doorbell_led_start(LED_PANEL_RESULT_OK);
         httpd_resp_set_type(req, "text/html; charset=utf-8");
         httpd_resp_sendstr(req,
-            "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-            "<body><h3>Bağlantı başarılı!</h3>"
-            "<p>Yeni bina Wi-Fi ayarları kaydedildi. Kurulum ağı kapatılıyor.</p></body></html>");
+                           "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                           "<body><h3>Bağlantı başarılı!</h3>"
+                           "<p>Yeni bina Wi-Fi ayarları kaydedildi. Kurulum ağı kapatılıyor.</p></body></html>");
 
         s_portal_close_pending = true;
         return ESP_OK;
@@ -439,17 +445,17 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     }
     s_sta_cfg_untested = false;
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
-    xSemaphoreGive(g_panel_mutex);
+    panel_unlock();
 
-    doorbell_led_panel_start(LED_PANEL_RESULT_ERR);
+    doorbell_led_start(LED_PANEL_RESULT_ERR);
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_sendstr(req,
-        "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-        "<body><h3>Bağlantı başarısız!</h3>"
-        "<p>Panel girilen Wi-Fi ağına bağlanamadı veya IP adresi alamadı. "
-        "Wi-Fi adını ve şifresini kontrol edip tekrar deneyin.</p>"
-        "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+                              "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+                              "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+                              "<body><h3>Bağlantı başarısız!</h3>"
+                              "<p>Panel girilen Wi-Fi ağına bağlanamadı veya IP adresi alamadı. "
+                              "Wi-Fi adını ve şifresini kontrol edip tekrar deneyin.</p>"
+                              "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
 }
 
 /* ---- Captive portal: DNS responder + HTTP redirect on the SoftAP only ----
@@ -512,8 +518,8 @@ static void portal_dns_start(void)
     };
     struct timeval tmo = {.tv_sec = 0, .tv_usec = PORTAL_DNS_RCV_TMO_US};
     if (doorbell_net_bind_socket_to_softap(sock) != ESP_OK ||
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo)) < 0 ||
-        bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo)) < 0 ||
+            bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         ESP_LOGW(TAG, "Captive DNS not started: bind failed (errno=%d)", errno);
         close(sock);
         return;
@@ -634,8 +640,8 @@ esp_err_t panel_portal_start(void)
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
 
     /* 2 s solid confirmation followed by 1 Hz slow blink while portal is open (I-40, §7.1) */
-    doorbell_led_panel_start(LED_PANEL_PORTAL);
-    doorbell_led_panel_start(LED_PANEL_RESULT_OK);
+    doorbell_led_start(LED_PANEL_PORTAL);
+    doorbell_led_start(LED_PANEL_RESULT_OK);
 
     ESP_LOGI(TAG, "Setup web portal active on Doorbell-Setup for %d s", CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S);
     return ESP_OK;
@@ -649,7 +655,7 @@ void panel_portal_stop(void)
         httpd_stop(s_httpd);
         s_httpd = NULL;
     }
-    doorbell_led_panel_stop(LED_PANEL_PORTAL);
+    doorbell_led_stop(LED_PANEL_PORTAL);
     doorbell_net_stop_softap();
 
     /* httpd_stop() has returned, so no handler is running. If a credential test was interrupted, the STA driver still
@@ -685,9 +691,8 @@ void panel_portal_tick(void)
         return;
     }
     if (s_portal_close_pending || (s_portal_deadline_us > 0 && esp_timer_get_time() >= s_portal_deadline_us)) {
-        xSemaphoreTake(g_panel_mutex, portMAX_DELAY);
+        panel_lock();
         panel_portal_stop();
-        xSemaphoreGive(g_panel_mutex);
+        panel_unlock();
     }
 }
-

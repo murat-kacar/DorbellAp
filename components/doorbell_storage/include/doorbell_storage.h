@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "doorbell_protocol.h"
@@ -9,7 +10,12 @@ extern "C" {
 #endif
 
 #define DOORBELL_NVS_NAMESPACE "doorbell"
-#define DOORBELL_MAX_APT_SLOTS  100 /* 1..99 */
+/* Highest apartment number the firmware supports (Kconfig DOORBELL_PANEL_MAX_APT_NO <= this, 24 KB NVS budget) */
+#define DOORBELL_APT_NO_MAX     99
+/* Per-apartment arrays are indexed by apartment number; index 0 (the panel's protocol id) is unused */
+#define DOORBELL_APT_SLOT_COUNT (DOORBELL_APT_NO_MAX + 1)
+
+/* Every record starts with magic + version and ends with a CRC32 over all preceding bytes (I-50) */
 
 typedef struct {
     uint32_t magic;
@@ -28,12 +34,23 @@ typedef struct {
     uint32_t crc32;
 } doorbell_panel_cfg_blob_t;
 
+/** Building Wi-Fi as provisioned by the flasher (Burn / Flash), kept apart from the editable panel_cfg copy */
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    char wifi_ssid[33];
+    char wifi_pass[65];
+    uint8_t pad[2];
+    uint32_t crc32;
+} doorbell_panel_factory_wifi_blob_t;
+
 typedef struct {
     uint32_t magic;
     uint16_t version;
     uint8_t apt_no;
     uint8_t registered;
-    uint8_t unit_mac[6];
+    uint8_t unit_mac[DOORBELL_MAC_SIZE];
     uint8_t reserved[2];
     uint8_t k_apt[DOORBELL_KEY_SIZE];
     uint32_t last_ipv4;
@@ -47,7 +64,7 @@ typedef struct {
     uint16_t version;
     uint8_t paired;
     uint8_t apt_no;
-    uint8_t panel_mac[6];
+    uint8_t panel_mac[DOORBELL_MAC_SIZE];
     uint8_t ap_channel;
     uint8_t reserved;
     char wifi_ssid[33];
@@ -68,18 +85,23 @@ typedef struct {
 esp_err_t doorbell_storage_init(void);
 
 /* ---- Panel Storage API ---- */
-esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg);
-esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg);
-/** Building Wi-Fi as provisioned by the flasher (Burn / Flash), kept apart from the editable panel_cfg copy */
+
+/** Values of a fresh panel_cfg on blank NVS (bench boards; the flasher provisions unique codes, I-5) */
 typedef struct {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t reserved;
-    char wifi_ssid[33];
-    char wifi_pass[65];
-    uint8_t pad[2];
-    uint32_t crc32;
-} doorbell_panel_factory_wifi_blob_t;
+    const char *wifi_ssid;
+    const char *wifi_pass;
+    const char *admin_code; /**< also the factory admin code */
+    const char *user_code;  /**< also the factory user code */
+} doorbell_panel_cfg_defaults_t;
+
+/**
+ * Load panel_cfg. On blank NVS (no record) the record is initialized from @p blank_nvs_defaults and saved. An existing
+ * but unreadable record (size / magic / version / CRC) returns an error and write-protects panel_cfg for this boot,
+ * so its unique factory codes (I-5) are never overwritten.
+ */
+esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg,
+                                          const doorbell_panel_cfg_defaults_t *blank_nvs_defaults);
+esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg);
 
 /** Read the factory Wi-Fi record (ESP_ERR_NVS_NOT_FOUND if none was recorded yet). */
 esp_err_t doorbell_storage_panel_load_factory_wifi(doorbell_panel_factory_wifi_blob_t *out);
@@ -131,4 +153,3 @@ esp_err_t doorbell_storage_unit_next_tx_counter(doorbell_unit_state_blob_t *stat
 #ifdef __cplusplus
 }
 #endif
-

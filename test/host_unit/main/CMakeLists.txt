@@ -1,3 +1,4 @@
 idf_component_register(SRCS "test_main.c"
                        INCLUDE_DIRS "."
-                       PRIV_REQUIRES unity doorbell_protocol doorbell_captive_dns)
+                       PRIV_REQUIRES unity nvs_flash doorbell_protocol doorbell_keypad doorbell_storage
+                                     doorbell_captive_dns)

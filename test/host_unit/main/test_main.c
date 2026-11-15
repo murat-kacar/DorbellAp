@@ -1,16 +1,21 @@
-/* Host unit tests (ESP-IDF linux target) for doorbell_protocol and doorbell_captive_dns: they run the product C code,
- * complementing tools/verify_protocol_vectors.py, which checks the specification with Python reference models. */
+/* Host unit tests (ESP-IDF linux target) for doorbell_protocol, doorbell_keypad, doorbell_storage (on the emulated NVS
+ * partition) and doorbell_captive_dns: they run the product C code, complementing tools/verify_protocol_vectors.py,
+ * which checks the specification with Python reference models. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "unity.h"
+#include "nvs.h"
 #include "doorbell_protocol.h"
+#include "doorbell_keypad.h"
+#include "doorbell_storage.h"
 #include "doorbell_captive_dns.h"
 
 static const uint8_t KEY[DOORBELL_KEY_SIZE] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-                                               0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+                                               0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+                                              };
 
 static doorbell_hdr_t make_hdr(uint8_t msg_type, uint32_t tx_counter)
 {
@@ -325,10 +330,244 @@ TEST_CASE("captive DNS: random packets never produce a reply longer than the buf
     }
 }
 
+/* ---- Keypad grammar (docs/protocol.md §6.2, I-20) ---- */
+
+static const doorbell_kp_limits_t KP_LIMITS = {
+    .min_apt_no = 1,
+    .max_apt_no = 99,
+    .user_code_len = 4,
+    .admin_code_len = 8,
+};
+
+static doorbell_kp_cmd_t kp(const char *seq)
+{
+    doorbell_kp_cmd_t cmd;
+    doorbell_keypad_parse(seq, strlen(seq), &KP_LIMITS, &cmd);
+    return cmd;
+}
+
+TEST_CASE("keypad: cancel, ring and apartment number rules", "[keypad]")
+{
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CANCEL, kp("*").kind);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("").kind);
+
+    doorbell_kp_cmd_t c = kp("12");
+    TEST_ASSERT_EQUAL(DOORBELL_KP_RING, c.kind);
+    TEST_ASSERT_FALSE(c.starred);
+    TEST_ASSERT_EQUAL(12, c.apt_no);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("0").kind);   /* no apartment 0 */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("07").kind);  /* no leading zero */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("100").kind); /* above the configured maximum */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("1*2").kind); /* not digits */
+}
+
+TEST_CASE("keypad: user code and admin command shapes", "[keypad]")
+{
+    doorbell_kp_cmd_t c = kp("*1234");
+    TEST_ASSERT_EQUAL(DOORBELL_KP_USER_CODE, c.kind);
+    TEST_ASSERT_TRUE(c.starred);
+    TEST_ASSERT_EQUAL(4, c.code.len);
+    TEST_ASSERT_EQUAL_MEMORY("1234", c.code.ptr, 4);
+    /* The parser never judges the code itself: a wrong-length candidate is still a user-code attempt */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_USER_CODE, kp("*12").kind);
+
+    c = kp("*12345678*1*7");
+    TEST_ASSERT_EQUAL(DOORBELL_KP_ADMIN, c.kind);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_PAIR, c.cmd);
+    TEST_ASSERT_EQUAL(7, c.apt_no);
+    TEST_ASSERT_EQUAL_MEMORY("12345678", c.code.ptr, 8);
+
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_DELETE, kp("*12345678*2*7*7").cmd);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*2*7*8").kind);    /* confirmation differs */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_SET_USER, kp("*12345678*3*4321*4321").cmd);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*3*4321*4322").kind);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*3*432*432").kind); /* wrong user code length */
+    c = kp("*12345678*4*87654321*87654321");
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_SET_ADMIN, c.cmd);
+    TEST_ASSERT_EQUAL_MEMORY("87654321", c.arg.ptr, 8);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_PORTAL, kp("*12345678*5").cmd);
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*5*1").kind);
+    c = kp("*12345678*6*12345678");
+    TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_BUILDING_RESET, c.cmd);
+    TEST_ASSERT_EQUAL_MEMORY("12345678", c.arg.ptr, 8);
+
+    /* Malformed templates never reach a code comparison (no wrong-code penalty, I-20) */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*9").kind);          /* unknown command */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*12*7").kind);       /* two-digit command */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678**7").kind);         /* empty token */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*1*7*").kind);       /* trailing '*' */
+    TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*1*2*3*4*5").kind);           /* too many segments */
+    TEST_ASSERT_TRUE(kp("*12345678*9").starred);                                /* still subject to the lockout */
+}
+
+/* ---- Accepted frames and the ACK cache (I-29, I-50, I-62) ---- */
+
+TEST_CASE("rx accept: replay floor, authenticated address change, persist per counter block", "[protocol]")
+{
+    uint32_t floor = 0;
+    uint32_t peer = 0xC0A80105;
+    /* Same address, floor within the block: no persist */
+    TEST_ASSERT_FALSE(doorbell_rx_accept(&floor, &peer, 0, 5, 0xC0A80105, 0xC0A80105, 100));
+    TEST_ASSERT_EQUAL_UINT32(5, floor);
+    /* Address in the payload differs from the packet source: not adopted (I-62) */
+    TEST_ASSERT_FALSE(doorbell_rx_accept(&floor, &peer, 0, 6, 0xC0A80109, 0xC0A80107, 100));
+    TEST_ASSERT_EQUAL_UINT32(0xC0A80105, peer);
+    /* Authenticated new address: adopted and persisted */
+    TEST_ASSERT_TRUE(doorbell_rx_accept(&floor, &peer, 0, 7, 0xC0A80107, 0xC0A80107, 100));
+    TEST_ASSERT_EQUAL_UINT32(0xC0A80107, peer);
+    /* A whole block since the last persist */
+    TEST_ASSERT_TRUE(doorbell_rx_accept(&floor, &peer, 7, 107, 0xC0A80107, 0xC0A80107, 100));
+}
+
+TEST_CASE("dedup cache: only a byte-identical retry is answered from the cache", "[protocol]")
+{
+    doorbell_hdr_t req_hdr = make_hdr(DOORBELL_MSG_OPEN_DOOR_REQ, 40);
+    const uint8_t req_plain[4] = {1, 2, 3, 4};
+    uint8_t req[DOORBELL_MAX_FRAME_SIZE];
+    size_t req_len = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_frame_encrypt(&req_hdr, KEY, req_plain, sizeof(req_plain), req, sizeof(req),
+                                                     &req_len));
+
+    doorbell_dedup_cache_t cache = {0};
+    TEST_ASSERT_FALSE(doorbell_dedup_match(&cache, &req_hdr, req, req_len));
+    doorbell_hdr_t ack_hdr = doorbell_hdr_make(DOORBELL_MSG_OPEN_DOOR_ACK, 0, DOORBELL_ID_PANEL, 7, req_hdr.seq_id, 9);
+    const uint8_t ack_plain[2] = {0xAA, 0xBB};
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_dedup_store(&cache, &ack_hdr, KEY, ack_plain, sizeof(ack_plain), &req_hdr, req,
+                                                   req_len));
+    TEST_ASSERT_TRUE(doorbell_dedup_match(&cache, &req_hdr, req, req_len));
+
+    /* The cached ACK decrypts with the peer key */
+    doorbell_hdr_t out;
+    uint8_t plain[8];
+    size_t plain_len = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_frame_decrypt(cache.frame, cache.frame_len, KEY, &out, plain, sizeof(plain),
+                                                     &plain_len));
+    TEST_ASSERT_EQUAL_MEMORY(ack_plain, plain, sizeof(ack_plain));
+
+    /* Same counter and seq_id but another tag (forged header): not a duplicate */
+    req[req_len - 1] ^= 0x01;
+    TEST_ASSERT_FALSE(doorbell_dedup_match(&cache, &req_hdr, req, req_len));
+}
+
+/* ---- NVS records (doorbell_storage on the emulated NVS partition, I-5, I-13, I-50) ---- */
+
+/* tools/panel_cfg_blob.py: pack_panel_cfg_blob("Bina AP", "password123", "12345678", "1234"). The flasher writes this
+ * layout into the panel's NVS image; the firmware must read it unchanged (cross-language layout check). */
+static const char GOLDEN_PANEL_CFG_HEX[] =
+    "435042440100000042696e61204150000000000000000000000000000000000000000000000000000070617373776f72643132330000"
+    "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    "313233343536373800000000313233340000000000000000313233343536373800000000313233340000000000000000000000000000"
+    "000030bc7bd7";
+
+static const doorbell_panel_cfg_defaults_t TEST_CFG_DEFAULTS = {
+    .wifi_ssid = "",
+    .wifi_pass = "",
+    .admin_code = "11111111",
+    .user_code = "2222",
+};
+
+static void hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
+{
+    TEST_ASSERT_EQUAL(out_len * 2, strlen(hex));
+    for (size_t i = 0; i < out_len; i++) {
+        unsigned v = 0;
+        TEST_ASSERT_EQUAL(1, sscanf(&hex[2 * i], "%2x", &v));
+        out[i] = (uint8_t)v;
+    }
+}
+
+static void nvs_write_raw(const char *key, const void *data, size_t len)
+{
+    nvs_handle_t h;
+    TEST_ASSERT_EQUAL(ESP_OK, nvs_open(DOORBELL_NVS_NAMESPACE, NVS_READWRITE, &h));
+    TEST_ASSERT_EQUAL(ESP_OK, nvs_set_blob(h, key, data, len));
+    TEST_ASSERT_EQUAL(ESP_OK, nvs_commit(h));
+    nvs_close(h);
+}
+
+TEST_CASE("storage: apartment records and the write-ahead tx counter", "[storage]")
+{
+    doorbell_panel_apt_blob_t apt = {.apt_no = 5, .registered = 1, .tx_counter_ceiling = 10};
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_save_apt(&apt));
+
+    /* Counters up to the ceiling need no NVS write; the next one first commits a new block (I-50) */
+    uint32_t runtime = 9;
+    uint32_t ctr = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_next_tx_counter(&apt, &runtime, 100, &ctr));
+    TEST_ASSERT_EQUAL_UINT32(10, ctr);
+    TEST_ASSERT_EQUAL_UINT32(10, apt.tx_counter_ceiling);
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_next_tx_counter(&apt, &runtime, 100, &ctr));
+    TEST_ASSERT_EQUAL_UINT32(11, ctr);
+    TEST_ASSERT_EQUAL_UINT32(110, apt.tx_counter_ceiling);
+
+    doorbell_panel_apt_blob_t back;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_apt(5, &back));
+    TEST_ASSERT_EQUAL_UINT32(110, back.tx_counter_ceiling); /* the reservation is in NVS before counter 11 is used */
+
+    /* Exhausted counter space is refused */
+    runtime = DOORBELL_COUNTER_MAX_VALID;
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, doorbell_storage_panel_next_tx_counter(&apt, &runtime, 100, &ctr));
+
+    /* A record stored under another apartment's key is rejected */
+    back.apt_no = 6;
+    nvs_write_raw("apt_005", &back, sizeof(back));
+    TEST_ASSERT_NOT_EQUAL(ESP_OK, doorbell_storage_panel_load_apt(5, &back));
+
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_erase_all_apts(1, 99));
+    TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_panel_load_apt(5, &back));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, doorbell_storage_panel_erase_all_apts(1, 255));
+}
+
+/* One test case: a corrupt panel_cfg write-protects the record for the rest of the process */
+TEST_CASE("storage: flasher panel_cfg layout, factory reset, fail-closed corrupt record", "[storage]")
+{
+    uint8_t golden[sizeof(doorbell_panel_cfg_blob_t)];
+    hex_to_bytes(GOLDEN_PANEL_CFG_HEX, golden, sizeof(golden));
+    nvs_write_raw("panel_cfg", golden, sizeof(golden));
+
+    doorbell_panel_cfg_blob_t cfg;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&cfg, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL_STRING("Bina AP", cfg.wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("password123", cfg.wifi_pass);
+    TEST_ASSERT_EQUAL_STRING("12345678", cfg.admin_code);
+    TEST_ASSERT_EQUAL_STRING("1234", cfg.user_code);
+    TEST_ASSERT_EQUAL_STRING("12345678", cfg.factory_admin_code);
+    TEST_ASSERT_EQUAL_STRING("1234", cfg.factory_user_code);
+
+    /* First boot records the provisioned Wi-Fi; later changes never overwrite that record */
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_snapshot_factory_wifi(&cfg));
+    strcpy(cfg.wifi_ssid, "Other AP");
+    strcpy(cfg.admin_code, "87654321");
+    cfg.wrong_code_count = 3;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_save_cfg(&cfg));
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_snapshot_factory_wifi(&cfg));
+
+    doorbell_panel_apt_blob_t apt = {.apt_no = 9, .registered = 1};
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_save_apt(&apt));
+    bool changed = false;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_factory_reset(&cfg, 1, 99, &changed));
+    TEST_ASSERT_TRUE(changed);
+    TEST_ASSERT_EQUAL_STRING("Bina AP", cfg.wifi_ssid);
+    TEST_ASSERT_EQUAL_STRING("12345678", cfg.admin_code);
+    TEST_ASSERT_EQUAL(0, cfg.wrong_code_count);
+    TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_panel_load_apt(9, &apt));
+    doorbell_panel_cfg_blob_t reloaded;
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&reloaded, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL_STRING("12345678", reloaded.admin_code);
+
+    /* A corrupt record fails closed: it is reported, zeroized in RAM and never overwritten (I-5, I-13) */
+    golden[40] ^= 0x01;
+    nvs_write_raw("panel_cfg", golden, sizeof(golden));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_CRC, doorbell_storage_panel_load_cfg(&reloaded, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL(0, reloaded.admin_code[0]);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, doorbell_storage_panel_save_cfg(&cfg));
+}
+
 void app_main(void)
 {
-    if (doorbell_crypto_init() != ESP_OK) {
-        printf("psa_crypto_init failed\n");
+    /* The firmware relies on ESP-IDF's startup psa_crypto_init(); the linux host app initializes it explicitly */
+    if (doorbell_crypto_init() != ESP_OK || doorbell_storage_init() != ESP_OK) {
+        printf("psa_crypto_init or nvs_flash_init failed\n");
         exit(1);
     }
     UNITY_BEGIN();

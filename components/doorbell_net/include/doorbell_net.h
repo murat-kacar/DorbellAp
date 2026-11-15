@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -79,9 +80,16 @@ esp_err_t doorbell_net_stop_softap(void);
 uint16_t doorbell_net_get_softap_sta_count(void);
 
 /**
- * @brief Scan for an open Pairing SoftAP matching prefix "Doorbell-Pair-" and connect STA to it.
+ * @brief Scan for exactly one open SoftAP whose SSID starts with @p ssid_prefix and connect the STA to it.
+ *
+ * Waits (scan, then association and DHCP) in 250 ms slices and calls @p on_wait before each one, so a caller
+ * subscribed to the task watchdog feeds it there (I-46).
+ *
+ * @return ESP_OK once associated with an IPv4 lease, ESP_ERR_NOT_FOUND if none is visible, ESP_ERR_INVALID_STATE if
+ *         more than one matches (mis-pairing guard), ESP_ERR_TIMEOUT if scan + lease took longer than @p timeout_ms.
  */
-esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout_ms);
+esp_err_t doorbell_net_scan_and_join_open_ap(const char *ssid_prefix, char out_ssid[33], uint32_t timeout_ms,
+                                             void (*on_wait)(void *ctx), void *ctx);
 
 /** Maximum number of distinct networks kept from one asynchronous scan */
 #define DOORBELL_NET_SCAN_MAX 15
@@ -135,17 +143,6 @@ esp_err_t doorbell_net_get_softap_if_name(char out_name[6]);
  * arrives on the STA interface. A device-bound pcb drops anything not received on the SoftAP netif.
  */
 esp_err_t doorbell_net_bind_socket_to_softap(int sock);
-
-/**
- * @brief Send an encrypted protocol frame using unicast on Attempt 1 and dual-path
- *        (unicast + 255.255.255.255 broadcast) on retries (I-33).
- */
-esp_err_t doorbell_udp_send_frame(int sock,
-                                  uint8_t *frame,
-                                  size_t frame_len,
-                                  uint32_t peer_ipv4_host,
-                                  uint16_t port,
-                                  bool is_retry);
 
 /**
  * @brief Send a raw UDP datagram directly to a specific IPv4 address (host byte order).

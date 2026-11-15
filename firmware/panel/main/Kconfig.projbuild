@@ -1,0 +1,214 @@
+# Entrance panel settings. Shared settings (network, heartbeat, status LED) are in
+# components/doorbell_common/Kconfig.projbuild; the flasher builds its form from both files.
+menu "Doorbell panel"
+
+    menu "Building Wi-Fi and setup portal"
+
+        config DOORBELL_PANEL_DEFAULT_WIFI_SSID
+            string "Default Wi-Fi SSID"
+            default ""
+            help
+                Initial building AP SSID used only if NVS has no stored credentials.
+
+        config DOORBELL_PANEL_DEFAULT_WIFI_PASS
+            string "Default Wi-Fi password"
+            default ""
+            help
+                Initial building AP WPA2 passphrase used only if NVS has no stored credentials. Leave empty in
+                version control; provision in the field via the setup web portal (*<admin>*5#) or UART console.
+
+        config DOORBELL_PANEL_PORTAL_TIMEOUT_S
+            int "Wi-Fi setup portal timeout (s)"
+            range 30 600
+            default 120
+            help
+                Duration in seconds that the Doorbell-Setup WPA3-SAE SoftAP remains open.
+
+    endmenu
+
+    menu "GPIO (Classic ESP32)"
+
+        config DOORBELL_PANEL_GPIO_ROW0
+            int "Keypad row 0 GPIO"
+            range 0 33
+            default 13
+        config DOORBELL_PANEL_GPIO_ROW1
+            int "Keypad row 1 GPIO"
+            range 0 33
+            default 14
+        config DOORBELL_PANEL_GPIO_ROW2
+            int "Keypad row 2 GPIO"
+            range 0 33
+            default 27
+        config DOORBELL_PANEL_GPIO_ROW3
+            int "Keypad row 3 GPIO"
+            range 0 33
+            default 26
+        config DOORBELL_PANEL_GPIO_COL0
+            int "Keypad column 0 GPIO"
+            range 0 39
+            default 25
+        config DOORBELL_PANEL_GPIO_COL1
+            int "Keypad column 1 GPIO"
+            range 0 39
+            default 33
+        config DOORBELL_PANEL_GPIO_COL2
+            int "Keypad column 2 GPIO"
+            range 0 39
+            default 32
+        config DOORBELL_PANEL_GPIO_DOOR_RELAY
+            int "Door relay GPIO"
+            range 0 33
+            default 23
+        config DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW
+            bool "Door relay is driven LOW to open"
+            default y
+        config DOORBELL_PANEL_GPIO_STATUS_LED
+            int "Status LED GPIO"
+            range 0 33
+            default 2
+        config DOORBELL_PANEL_GPIO_RESET_BTN
+            int "Hidden factory reset button GPIO"
+            range 0 39
+            default 19
+        config DOORBELL_PANEL_RESET_BTN_ACTIVE_LOW
+            bool "Factory reset button pulls the GPIO LOW"
+            default y
+        config DOORBELL_PANEL_RESET_BTN_INTERNAL_PULL
+            bool "Enable the internal pull resistor"
+            default y
+
+    endmenu
+
+    menu "Keypad"
+
+        config DOORBELL_PANEL_KEY_MAP
+            string "Key map (12 characters, row-major)"
+            default "123456789*0#"
+            help
+                12-character row-major mapping for the 4x3 keypad matrix.
+
+        config DOORBELL_PANEL_INPUT_TIMEOUT_S
+            int "Input timeout (s)"
+            range 3 60
+            default 10
+            help
+                Seconds of inactivity before an incomplete keypad sequence is cleared.
+
+    endmenu
+
+    menu "Door relay"
+
+        config DOORBELL_PANEL_DOOR_PULSE_MS
+            int "Door relay pulse (ms)"
+            range 100 10000
+            default 500
+            help
+                Milliseconds the door lock relay remains energized on door open.
+
+    endmenu
+
+    menu "Apartments and codes"
+
+        config DOORBELL_PANEL_MIN_APT_NO
+            int "Lowest apartment number"
+            range 1 99
+            default 1
+
+        config DOORBELL_PANEL_MAX_APT_NO
+            int "Highest apartment number"
+            range 1 99
+            default 99
+
+        config DOORBELL_PANEL_ADMIN_CODE_LEN
+            int "Admin code length"
+            range 8 10
+            default 8
+            help
+                Number of digits in the panel administrator code (minimum 8 digits required for WPA3-SAE setup AP).
+
+        config DOORBELL_PANEL_USER_CODE_LEN
+            int "User code length"
+            range 4 8
+            default 4
+            help
+                Number of digits in the shared building door-open code.
+
+        config DOORBELL_PANEL_DEFAULT_ADMIN_CODE
+            string "Factory default admin code (for initial blank NVS)"
+            default "12345678"
+            help
+                Initial factory admin code written only when NVS is uninitialized. In production, per-device
+                unique codes should be provisioned at factory flashing time.
+
+        config DOORBELL_PANEL_DEFAULT_USER_CODE
+            string "Factory default user code (for initial blank NVS)"
+            default "1234"
+            help
+                Initial factory user door-open code written only when NVS is uninitialized.
+
+    endmenu
+
+    menu "Keypad lockout"
+
+        config DOORBELL_PANEL_LOCKOUT_WRONG_CODES
+            int "Wrong codes before lockout"
+            range 1 20
+            default 5
+
+        config DOORBELL_PANEL_LOCKOUT_FIRST_S
+            int "First lockout (s)"
+            range 10 3600
+            default 60
+
+        config DOORBELL_PANEL_LOCKOUT_MULTIPLIER
+            int "Lockout multiplier"
+            range 1 10
+            default 2
+
+        config DOORBELL_PANEL_LOCKOUT_MAX_S
+            int "Maximum lockout (s)"
+            range 10 86400
+            default 900
+
+    endmenu
+
+    menu "Factory reset button"
+
+        config DOORBELL_PANEL_RESET_MIN_HOLD_S
+            int "Minimum hold (s)"
+            range 3 30
+            default 10
+
+        config DOORBELL_PANEL_RESET_MAX_HOLD_S
+            int "Maximum hold (s)"
+            range 15 65
+            default 60
+
+    endmenu
+
+    menu "Other"
+
+        config DOORBELL_PAIRING_WINDOW_S
+            int "Pairing window (s)"
+            range 10 120
+            default 20
+            help
+                Duration in seconds of the panel's temporary SoftAP module discovery window.
+
+        config DOORBELL_PANEL_RING_RETRIES
+            int "RING retries without ACK"
+            range 0 5
+            default 2
+
+        config DOORBELL_PANEL_SILENCE_RESTART
+            bool "Restart the panel when no module reports"
+            depends on DOORBELL_HEARTBEAT_ENABLED
+            default y
+            help
+                When at least one apartment is registered and no module sends a heartbeat for 3 consecutive
+                intervals, restart the panel with persistent RTC backoff (15 min -> 48 h).
+
+    endmenu
+
+endmenu

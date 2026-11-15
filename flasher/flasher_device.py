@@ -22,12 +22,13 @@ import serial.tools.list_ports
 from flasher_config import PROJECT_ROOT, strip_ansi
 from flasher_env import IDF_VENV_PYTHON
 from flasher_images import (
-    PANEL_NVS_OFFSET,
-    PANEL_NVS_SIZE,
     burn_efuse_problems,
     burn_layout_from_partition_table,
     make_nvs_keys_partition,
     parse_partition_table,
+    production_layout_from_partition_table,
+    read_build_info,
+    verify_burn_image_signatures,
     write_panel_nvs_csv,
 )
 from flasher_widgets import DeviceCard
@@ -38,14 +39,17 @@ _BURN_FE_DONE_RE = re.compile(r"Flash encryption completed")
 _BURN_APP_START_RE = re.compile(r"Project name:")
 
 _BURN_ERROR_RE = re.compile(
-    r"^E \(\d+\) (secure_boot\S*|flash_encrypt|boot|esp_image|doorbell_storage)\b|Guru Meditation|abort\(\) was called"
-    r"|Brownout detector was triggered"
+    r"^E \(\d+\) (secure_boot\S*|flash_encrypt\S*|boot\S*|esp_image|efuse\S*|esp_security|nvs\S*|doorbell_\S+)\b"
+    r"|Guru Meditation|abort\(\) was called|Brownout detector was triggered|invalid header:|flash read err"
 )
 
 # Runs inside the ESP-IDF venv (esptool 5.x). Chip info is printed before the hard reset so a reset
-# failure cannot discard it; every failure is reported as one PROBE_ERROR line instead of a traceback.
+# failure cannot discard it. If detect_chip() fails (for example on a burned chip with UART download
+# disabled), pulse RTS with DTR released (GPIO0 HIGH) to recover into normal boot and check the boot log;
+# otherwise report one PROBE_ERROR line instead of a traceback.
 ESPTOOL_PROBE_SCRIPT = """
-import sys
+import re, sys, time
+import serial
 try:
     from esptool.cmds import detect_chip
     with detect_chip(port=sys.argv[1], connect_attempts=2) as esp:
@@ -60,6 +64,40 @@ try:
         except Exception as exc:
             print(f"PROBE_WARN|hard reset failed: {exc}".replace(chr(10), " "), flush=True)
 except Exception as exc:
+    boot_log = ""
+    try:
+        ser = serial.Serial()
+        ser.port, ser.baudrate, ser.timeout = sys.argv[1], 115200, 0.1
+        ser.dtr = False
+        ser.rts = False
+        ser.open()
+        try:
+            ser.reset_input_buffer()
+            ser.rts = True
+            time.sleep(0.1)
+            ser.rts = False
+            deadline = time.monotonic() + 1.2
+            chunks = bytearray()
+            while time.monotonic() < deadline:
+                chunks += ser.read(512)
+            boot_log = re.sub(r"\\x1b\\[[0-9;?]*[ -/]*[@-~]", "", chunks.decode("utf-8", errors="replace"))
+        finally:
+            ser.close()
+    except Exception:
+        pass
+    if any(
+        tok in boot_log
+        for tok in (
+            "Download mode is disabled",
+            "flash encryption is enabled",
+            "Flash encryption mode is RELEASE",
+            "secure_boot_v2",
+        )
+    ):
+        m = re.search(r"Project name:\\s*(\\S+)", boot_log)
+        proj = m.group(1) if m else "esp32"
+        print(f"PROBE_LOCKED|{proj}", flush=True)
+        sys.exit(0)
     print(f"PROBE_ERROR|{type(exc).__name__}: {exc}".replace(chr(10), " "), flush=True)
     sys.exit(1)
 """
@@ -122,6 +160,7 @@ class DeviceMixin:
 
         for card in cards:
             port = card.port
+            locked = False
             self.log(f"[{port}] Probing ESP32 via esptool...\n")
             try:
                 proc = subprocess.run(
@@ -135,6 +174,7 @@ class DeviceMixin:
                 )
                 out = (proc.stdout or "") + (proc.stderr or "")
                 probe_m = re.search(r"^PROBE_INFO\|([^|]+)\|([^|]+)\|([^|]+)\|([^\r\n]+)", out, re.M)
+                locked_m = re.search(r"^PROBE_LOCKED\|([^\r\n]+)", out, re.M)
                 err_m = re.search(r"^PROBE_ERROR\|([^\r\n]+)", out, re.M)
                 warn_m = re.search(r"^PROBE_WARN\|([^\r\n]+)", out, re.M)
 
@@ -145,6 +185,13 @@ class DeviceMixin:
                     if warn_m:
                         self.log(f"[{port}] Warning: {warn_m.group(1)}\n")
                     chip_text, status, color = info_line, "Detect done", "#1b7e2b"
+                    locked = sb_str == "on" and fe_str == "on"
+                elif locked_m:
+                    proj = locked_m.group(1).strip()
+                    info_line = f"ESP32 ({proj}) | secure boot on | flash encryption on | UART download disabled"
+                    self.log(f"[{port}] {info_line}\n")
+                    chip_text, status, color = info_line, "Detect done (locked)", "#1b7e2b"
+                    locked = True
                 elif err_m and _PROBE_NO_CHIP_RE.search(err_m.group(1)):
                     self.log(f"[{port}] No ESP32 bootloader response: {err_m.group(1)}\n")
                     chip_text = "No ESP32 response (check USB cable or hold BOOT)"
@@ -160,9 +207,13 @@ class DeviceMixin:
                 self.log(f"[{port}] Probe error: {exc}\n")
                 chip_text, status, color = f"Probe failed: {exc}", "Probe error", "#b33a3a"
 
-            def _done(c: DeviceCard = card, t: str = chip_text, s: str = status, col: str = color) -> None:
+            def _done(
+                c: DeviceCard = card, t: str = chip_text, s: str = status, col: str = color, is_locked: bool = locked
+            ) -> None:
                 c.chip_info_var.set(t)
                 c.set_status(s, col, 0.0)
+                if is_locked:
+                    c.mark_burned()
                 c.set_busy(False)
 
             self.post_ui(_done)
@@ -187,11 +238,22 @@ class DeviceMixin:
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp = Path(tmpdir)
+                # Layout from the image's own partition table; its offset and the flash settings come from the
+                # build-info sidecar the flasher writes next to every build (flasher_args.json of that build)
                 raw = fw_path.read_bytes()
+                info = read_build_info(fw_path) or {}
+                if "partition_table_offset" not in info or "flash_settings" not in info:
+                    raise ValueError("build info lacks the flash layout: rebuild the image with this flasher")
+                pt_off = int(info["partition_table_offset"])
+                flash_settings = info["flash_settings"]
+                layout = production_layout_from_partition_table(parse_partition_table(raw[pt_off : pt_off + 0xC00]))
+                nvs_off, app_off = layout["nvs_offset"], layout["app_offset"]
+                if raw[0x1000] != 0xE9 or len(raw) <= app_off or raw[app_off] != 0xE9 or nvs_off >= app_off:
+                    raise ValueError("image does not contain a bootloader at 0x1000 and an app at the factory offset")
                 boot_file, app_file = tmp / "boot_and_pt.bin", tmp / "app.bin"
-                boot_file.write_bytes(raw[0x1000:PANEL_NVS_OFFSET])  # bootloader + partition table @0x8000
-                app_file.write_bytes(raw[0x10000:])
-                images: list[tuple[int, Path]] = [(0x1000, boot_file), (0x10000, app_file)]
+                boot_file.write_bytes(raw[0x1000:nvs_off])  # bootloader + partition table
+                app_file.write_bytes(raw[app_off:])
+                images: list[tuple[int, Path]] = [(0x1000, boot_file), (app_off, app_file)]
 
                 if panel_fields is not None:
                     csv_path, nvs_file = tmp / "nvs.csv", tmp / "panel_nvs.bin"
@@ -204,7 +266,7 @@ class DeviceMixin:
                             "generate",
                             str(csv_path),
                             str(nvs_file),
-                            hex(PANEL_NVS_SIZE),
+                            hex(layout["nvs_size"]),
                             "--outdir",
                             str(tmp),
                         ],
@@ -212,7 +274,7 @@ class DeviceMixin:
                     )
                     if rc != 0 or not nvs_file.is_file():
                         raise RuntimeError("NVS image generation failed")
-                    images.append((PANEL_NVS_OFFSET, nvs_file))
+                    images.append((nvs_off, nvs_file))
 
                 cmd = [
                     python_exe,
@@ -231,11 +293,11 @@ class DeviceMixin:
                     "write-flash",
                     "--erase-all",
                     "--flash-mode",
-                    "dio",
+                    flash_settings["flash_mode"],
                     "--flash-size",
-                    "2MB",
+                    flash_settings["flash_size"],
                     "--flash-freq",
-                    "40m",
+                    flash_settings["flash_freq"],
                 ]
                 for offset, path in images:
                     cmd += [hex(offset), str(path)]
@@ -294,6 +356,11 @@ class DeviceMixin:
                 for key in ("nvs_offset", "nvs_keys_offset", "app_offset"):
                     if int(info.get(key, -1)) != layout[key]:
                         raise ValueError(f"build info {key} does not match the image's partition table")
+                verify_burn_image_signatures(raw, info)
+                self.log(
+                    f"[{port}] Verified RSA-3072 Secure Boot v2 signatures "
+                    f"(key digest {info['secure_boot_key_digest'][:16]}...).\n"
+                )
                 boot_file, app_file = tmp / "boot_and_pt.bin", tmp / "app.bin"
                 boot_file.write_bytes(raw[0x1000 : pt_off + 0x1000])
                 app_file.write_bytes(raw[app_off:])

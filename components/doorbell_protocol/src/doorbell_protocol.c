@@ -1,6 +1,7 @@
 #include "doorbell_protocol.h"
 #include <string.h>
 #include "esp_log.h"
+#include "mbedtls/constant_time.h"
 #include "mbedtls/platform_util.h"
 
 static const char *TAG = "doorbell_proto";
@@ -114,13 +115,13 @@ esp_err_t doorbell_x25519_derive_kpair(const doorbell_x25519_ctx_t *ctx,
                                        const uint8_t peer_pub[DOORBELL_X25519_PUB_SIZE],
                                        const uint8_t panel_nonce[DOORBELL_PAIR_NONCE_SIZE],
                                        const uint8_t unit_nonce[DOORBELL_PAIR_NONCE_SIZE],
-                                       const uint8_t panel_mac[6],
-                                       const uint8_t unit_mac[6],
+                                       const uint8_t panel_mac[DOORBELL_MAC_SIZE],
+                                       const uint8_t unit_mac[DOORBELL_MAC_SIZE],
                                        uint8_t apt_no,
                                        uint8_t out_k_pair[DOORBELL_KEY_SIZE])
 {
     if (!ctx || !ctx->initialized || !peer_pub || !panel_nonce || !unit_nonce ||
-        !panel_mac || !unit_mac || !out_k_pair) {
+            !panel_mac || !unit_mac || !out_k_pair) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -160,8 +161,8 @@ esp_err_t doorbell_x25519_derive_kpair(const doorbell_x25519_ctx_t *ctx,
     static const char info_prefix[] = "DorbellAp-Pair-v1";
     uint8_t info[17 + 6 + 6 + 1];
     memcpy(info, info_prefix, 17);
-    memcpy(info + 17, panel_mac, 6);
-    memcpy(info + 23, unit_mac, 6);
+    memcpy(info + 17, panel_mac, DOORBELL_MAC_SIZE);
+    memcpy(info + 23, unit_mac, DOORBELL_MAC_SIZE);
     info[29] = apt_no;
 
     psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
@@ -381,6 +382,46 @@ esp_err_t doorbell_frame_decrypt(const uint8_t *frame,
                           out_plaintext_len);
 }
 
+bool doorbell_rx_accept(uint32_t *rx_floor, uint32_t *peer_ipv4, uint32_t persisted_rx_floor, uint32_t rx_counter,
+                        uint32_t sender_ipv4, uint32_t from_ipv4, uint32_t block_size)
+{
+    *rx_floor = rx_counter;
+    bool ip_changed = false;
+    if (sender_ipv4 == from_ipv4 && from_ipv4 != 0 && *peer_ipv4 != from_ipv4) {
+        *peer_ipv4 = from_ipv4;
+        ip_changed = true;
+    }
+    return ip_changed || (rx_counter - persisted_rx_floor) >= block_size;
+}
+
+bool doorbell_dedup_match(const doorbell_dedup_cache_t *cache, const doorbell_hdr_t *req_hdr, const uint8_t *req_frame,
+                          size_t req_len)
+{
+    return cache->valid && req_len >= DOORBELL_MIN_FRAME_SIZE && cache->tx_counter == req_hdr->tx_counter &&
+           cache->seq_id == req_hdr->seq_id &&
+           mbedtls_ct_memcmp(cache->req_tag, req_frame + req_len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE) == 0;
+}
+
+esp_err_t doorbell_dedup_store(doorbell_dedup_cache_t *cache, const doorbell_hdr_t *ack_hdr,
+                               const uint8_t key[DOORBELL_KEY_SIZE], const uint8_t *ack_plain, size_t ack_plain_len,
+                               const doorbell_hdr_t *req_hdr, const uint8_t *req_frame, size_t req_len)
+{
+    cache->valid = false;
+    if (req_len < DOORBELL_MIN_FRAME_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t err = doorbell_frame_encrypt(ack_hdr, key, ack_plain, ack_plain_len, cache->frame, sizeof(cache->frame),
+                                           &cache->frame_len);
+    if (err != ESP_OK) {
+        return err;
+    }
+    cache->tx_counter = req_hdr->tx_counter;
+    cache->seq_id = req_hdr->seq_id;
+    memcpy(cache->req_tag, req_frame + req_len - DOORBELL_TAG_SIZE, DOORBELL_TAG_SIZE);
+    cache->valid = true;
+    return ESP_OK;
+}
+
 void doorbell_frame_set_transport_flags(uint8_t *frame, bool is_retry, bool is_bcast)
 {
     if (!frame) {
@@ -398,16 +439,16 @@ void doorbell_frame_set_transport_flags(uint8_t *frame, bool is_retry, bool is_b
 
 /* Operational Payload Packing & Unpacking */
 
-size_t doorbell_pack_ring_req(const doorbell_pl_ring_req_t *pl, uint8_t out[8])
+size_t doorbell_pack_ring_req(const doorbell_pl_ring_req_t *pl, uint8_t out[DOORBELL_PL_RING_REQ_SIZE])
 {
     put_be32(&out[0], pl->sender_ipv4);
     put_be32(&out[4], pl->panel_boot_id);
-    return 8;
+    return DOORBELL_PL_RING_REQ_SIZE;
 }
 
 esp_err_t doorbell_unpack_ring_req(const uint8_t *buf, size_t len, doorbell_pl_ring_req_t *pl)
 {
-    if (!buf || !pl || len < 8) {
+    if (!buf || !pl || len < DOORBELL_PL_RING_REQ_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->sender_ipv4 = get_be32(&buf[0]);
@@ -415,18 +456,18 @@ esp_err_t doorbell_unpack_ring_req(const uint8_t *buf, size_t len, doorbell_pl_r
     return ESP_OK;
 }
 
-size_t doorbell_pack_ring_ack(const doorbell_pl_ring_ack_t *pl, uint8_t out[11])
+size_t doorbell_pack_ring_ack(const doorbell_pl_ring_ack_t *pl, uint8_t out[DOORBELL_PL_RING_ACK_SIZE])
 {
     put_be32(&out[0], pl->req_tx_counter);
     put_be16(&out[4], pl->req_seq_id);
     out[6] = pl->status;
     put_be32(&out[7], pl->sender_ipv4);
-    return 11;
+    return DOORBELL_PL_RING_ACK_SIZE;
 }
 
 esp_err_t doorbell_unpack_ring_ack(const uint8_t *buf, size_t len, doorbell_pl_ring_ack_t *pl)
 {
-    if (!buf || !pl || len < 11) {
+    if (!buf || !pl || len < DOORBELL_PL_RING_ACK_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->req_tx_counter = get_be32(&buf[0]);
@@ -436,17 +477,17 @@ esp_err_t doorbell_unpack_ring_ack(const uint8_t *buf, size_t len, doorbell_pl_r
     return ESP_OK;
 }
 
-size_t doorbell_pack_open_door_req(const doorbell_pl_open_door_req_t *pl, uint8_t out[16])
+size_t doorbell_pack_open_door_req(const doorbell_pl_open_door_req_t *pl, uint8_t out[DOORBELL_PL_OPEN_DOOR_REQ_SIZE])
 {
     put_be32(&out[0], pl->sender_ipv4);
     put_be32(&out[4], pl->panel_boot_id);
     put_be64(&out[8], pl->echo_nonce);
-    return 16;
+    return DOORBELL_PL_OPEN_DOOR_REQ_SIZE;
 }
 
 esp_err_t doorbell_unpack_open_door_req(const uint8_t *buf, size_t len, doorbell_pl_open_door_req_t *pl)
 {
-    if (!buf || !pl || len < 16) {
+    if (!buf || !pl || len < DOORBELL_PL_OPEN_DOOR_REQ_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->sender_ipv4 = get_be32(&buf[0]);
@@ -455,7 +496,7 @@ esp_err_t doorbell_unpack_open_door_req(const uint8_t *buf, size_t len, doorbell
     return ESP_OK;
 }
 
-size_t doorbell_pack_open_door_ack(const doorbell_pl_open_door_ack_t *pl, uint8_t out[23])
+size_t doorbell_pack_open_door_ack(const doorbell_pl_open_door_ack_t *pl, uint8_t out[DOORBELL_PL_OPEN_DOOR_ACK_SIZE])
 {
     put_be32(&out[0], pl->req_tx_counter);
     put_be16(&out[4], pl->req_seq_id);
@@ -463,12 +504,12 @@ size_t doorbell_pack_open_door_ack(const doorbell_pl_open_door_ack_t *pl, uint8_
     put_be32(&out[7], pl->sender_ipv4);
     put_be32(&out[11], pl->panel_boot_id);
     put_be64(&out[15], pl->challenge_nonce);
-    return 23;
+    return DOORBELL_PL_OPEN_DOOR_ACK_SIZE;
 }
 
 esp_err_t doorbell_unpack_open_door_ack(const uint8_t *buf, size_t len, doorbell_pl_open_door_ack_t *pl)
 {
-    if (!buf || !pl || len < 23) {
+    if (!buf || !pl || len < DOORBELL_PL_OPEN_DOOR_ACK_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->req_tx_counter = get_be32(&buf[0]);
@@ -480,7 +521,7 @@ esp_err_t doorbell_unpack_open_door_ack(const uint8_t *buf, size_t len, doorbell
     return ESP_OK;
 }
 
-size_t doorbell_pack_heartbeat_req(const doorbell_pl_heartbeat_req_t *pl, uint8_t out[37])
+size_t doorbell_pack_heartbeat_req(const doorbell_pl_heartbeat_req_t *pl, uint8_t out[DOORBELL_PL_HEARTBEAT_REQ_SIZE])
 {
     put_be32(&out[0], pl->sender_ipv4);
     put_be32(&out[4], pl->uptime_s);
@@ -497,11 +538,12 @@ size_t doorbell_pack_heartbeat_req(const doorbell_pl_heartbeat_req_t *pl, uint8_
     out[33] = pl->fw_version_major;
     out[34] = pl->fw_version_minor;
     put_be16(&out[35], pl->heartbeat_interval_s);
-    return 37;
+    return DOORBELL_PL_HEARTBEAT_REQ_SIZE;
 }
+
 esp_err_t doorbell_unpack_heartbeat_req(const uint8_t *buf, size_t len, doorbell_pl_heartbeat_req_t *pl)
 {
-    if (!buf || !pl || len < 37) {
+    if (!buf || !pl || len < DOORBELL_PL_HEARTBEAT_REQ_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->sender_ipv4 = get_be32(&buf[0]);
@@ -522,19 +564,19 @@ esp_err_t doorbell_unpack_heartbeat_req(const uint8_t *buf, size_t len, doorbell
     return ESP_OK;
 }
 
-size_t doorbell_pack_heartbeat_ack(const doorbell_pl_heartbeat_ack_t *pl, uint8_t out[15])
+size_t doorbell_pack_heartbeat_ack(const doorbell_pl_heartbeat_ack_t *pl, uint8_t out[DOORBELL_PL_HEARTBEAT_ACK_SIZE])
 {
     put_be32(&out[0], pl->req_tx_counter);
     put_be16(&out[4], pl->req_seq_id);
     out[6] = pl->status;
     put_be32(&out[7], pl->sender_ipv4);
     put_be32(&out[11], pl->panel_boot_id);
-    return 15;
+    return DOORBELL_PL_HEARTBEAT_ACK_SIZE;
 }
 
 esp_err_t doorbell_unpack_heartbeat_ack(const uint8_t *buf, size_t len, doorbell_pl_heartbeat_ack_t *pl)
 {
-    if (!buf || !pl || len < 15) {
+    if (!buf || !pl || len < DOORBELL_PL_HEARTBEAT_ACK_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->req_tx_counter = get_be32(&buf[0]);
@@ -545,22 +587,34 @@ esp_err_t doorbell_unpack_heartbeat_ack(const uint8_t *buf, size_t len, doorbell
     return ESP_OK;
 }
 
-size_t doorbell_pack_pair_complete(const doorbell_pl_pair_complete_t *pl, uint8_t out[12])
+esp_err_t doorbell_unpack_ack_ref(const uint8_t *buf, size_t len, uint32_t *out_req_tx_counter,
+                                  uint16_t *out_req_seq_id, uint8_t *out_status)
+{
+    if (!buf || !out_req_tx_counter || !out_req_seq_id || !out_status || len < 7U) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    *out_req_tx_counter = get_be32(&buf[0]);
+    *out_req_seq_id = get_be16(&buf[4]);
+    *out_status = buf[6];
+    return ESP_OK;
+}
+
+size_t doorbell_pack_pair_complete(const doorbell_pl_pair_complete_t *pl, uint8_t out[DOORBELL_PL_PAIR_COMPLETE_SIZE])
 {
     put_be32(&out[0], pl->sender_ipv4);
-    memcpy(&out[4], pl->unit_mac, 6);
+    memcpy(&out[4], pl->unit_mac, DOORBELL_MAC_SIZE);
     out[10] = pl->fw_version_major;
     out[11] = pl->fw_version_minor;
-    return 12;
+    return DOORBELL_PL_PAIR_COMPLETE_SIZE;
 }
 
 esp_err_t doorbell_unpack_pair_complete(const uint8_t *buf, size_t len, doorbell_pl_pair_complete_t *pl)
 {
-    if (!buf || !pl || len < 12) {
+    if (!buf || !pl || len < DOORBELL_PL_PAIR_COMPLETE_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     pl->sender_ipv4 = get_be32(&buf[0]);
-    memcpy(pl->unit_mac, &buf[4], 6);
+    memcpy(pl->unit_mac, &buf[4], DOORBELL_MAC_SIZE);
     pl->fw_version_major = buf[10];
     pl->fw_version_minor = buf[11];
     return ESP_OK;
@@ -571,32 +625,25 @@ esp_err_t doorbell_unpack_pair_complete(const uint8_t *buf, size_t len, doorbell
 /* PAIR_HELLO frame: 12-byte header + 56-byte cleartext payload (total 68 bytes) */
 size_t doorbell_pack_pair_hello(const doorbell_pair_hello_t *msg, uint8_t *out, size_t cap)
 {
-    if (!msg || !out || cap < (DOORBELL_HDR_SIZE + 56)) {
+    if (!msg || !out || cap < DOORBELL_PAIR_HELLO_FRAME_SIZE) {
         return 0;
     }
-    doorbell_hdr_t hdr = {
-        .magic = DOORBELL_PROTO_MAGIC,
-        .version = DOORBELL_PROTO_VERSION,
-        .msg_type = DOORBELL_MSG_PAIR_HELLO,
-        .flags = DOORBELL_FLAG_DIR_UNIT_TO_PANEL,
-        .src_id = 0,
-        .dst_id = DOORBELL_ID_PANEL,
-        .seq_id = 1,
-        .tx_counter = 1,
-    };
+    /* The module has no apartment number yet: src_id 0 */
+    doorbell_hdr_t hdr = doorbell_hdr_make(DOORBELL_MSG_PAIR_HELLO, DOORBELL_FLAG_DIR_UNIT_TO_PANEL, 0,
+                                           DOORBELL_ID_PANEL, 1, 1);
     doorbell_hdr_serialize(&hdr, out);
     uint8_t *p = out + DOORBELL_HDR_SIZE;
-    memcpy(p, msg->unit_mac, 6);
+    memcpy(p, msg->unit_mac, DOORBELL_MAC_SIZE);
     memcpy(p + 6, msg->unit_nonce, DOORBELL_PAIR_NONCE_SIZE);
     memcpy(p + 22, msg->unit_x25519_pub, DOORBELL_X25519_PUB_SIZE);
     p[54] = msg->fw_version_major;
     p[55] = msg->fw_version_minor;
-    return DOORBELL_HDR_SIZE + 56;
+    return DOORBELL_PAIR_HELLO_FRAME_SIZE;
 }
 
 esp_err_t doorbell_unpack_pair_hello(const uint8_t *buf, size_t len, doorbell_pair_hello_t *msg)
 {
-    if (!buf || !msg || len < (DOORBELL_HDR_SIZE + 56)) {
+    if (!buf || !msg || len < DOORBELL_PAIR_HELLO_FRAME_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     doorbell_hdr_t hdr;
@@ -605,7 +652,7 @@ esp_err_t doorbell_unpack_pair_hello(const uint8_t *buf, size_t len, doorbell_pa
         return ESP_ERR_INVALID_ARG;
     }
     const uint8_t *p = buf + DOORBELL_HDR_SIZE;
-    memcpy(msg->unit_mac, p, 6);
+    memcpy(msg->unit_mac, p, DOORBELL_MAC_SIZE);
     memcpy(msg->unit_nonce, p + 6, DOORBELL_PAIR_NONCE_SIZE);
     memcpy(msg->unit_x25519_pub, p + 22, DOORBELL_X25519_PUB_SIZE);
     msg->fw_version_major = p[54];
@@ -616,8 +663,9 @@ esp_err_t doorbell_unpack_pair_hello(const uint8_t *buf, size_t len, doorbell_pa
 /* PAIR_CHALLENGE:
  * 12-byte header + 55-byte cleartext prefix (panel_mac[6], panel_nonce[16], panel_x25519_pub[32], apt_no[1])
  * + 137-byte AEAD-encrypted provision blob (121 B plaintext + 16 B tag).
- * Nonce for PAIR_CHALLENGE AEAD: [0]=0x00, [1..12]=panel_nonce[0..11]; AAD = first 67 bytes (header + cleartext prefix). */
-esp_err_t doorbell_pack_pair_challenge(const uint8_t panel_mac[6],
+ * Nonce for PAIR_CHALLENGE AEAD: [0]=0x00, [1..12]=panel_nonce[0..11];
+ * AAD = the first 67 bytes (header + cleartext prefix, DOORBELL_PAIR_CHALLENGE_PREFIX_SIZE). */
+esp_err_t doorbell_pack_pair_challenge(const uint8_t panel_mac[DOORBELL_MAC_SIZE],
                                        const uint8_t panel_nonce[DOORBELL_PAIR_NONCE_SIZE],
                                        const uint8_t panel_pub[DOORBELL_X25519_PUB_SIZE],
                                        uint8_t apt_no,
@@ -627,26 +675,17 @@ esp_err_t doorbell_pack_pair_challenge(const uint8_t panel_mac[6],
                                        size_t cap,
                                        size_t *out_len)
 {
-    const size_t prefix_len = DOORBELL_HDR_SIZE + 55U;
-    const size_t total_len = prefix_len + DOORBELL_PROVISION_BLOB_ENC_SIZE;
+    const size_t prefix_len = DOORBELL_PAIR_CHALLENGE_PREFIX_SIZE;
+    const size_t total_len = DOORBELL_PAIR_CHALLENGE_FRAME_SIZE;
     if (!panel_mac || !panel_nonce || !panel_pub || !blob || !k_pair || !out || !out_len || cap < total_len) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    doorbell_hdr_t hdr = {
-        .magic = DOORBELL_PROTO_MAGIC,
-        .version = DOORBELL_PROTO_VERSION,
-        .msg_type = DOORBELL_MSG_PAIR_CHALLENGE,
-        .flags = 0,
-        .src_id = DOORBELL_ID_PANEL,
-        .dst_id = apt_no,
-        .seq_id = 1,
-        .tx_counter = 1,
-    };
+    doorbell_hdr_t hdr = doorbell_hdr_make(DOORBELL_MSG_PAIR_CHALLENGE, 0, DOORBELL_ID_PANEL, apt_no, 1, 1);
     doorbell_hdr_serialize(&hdr, out);
 
     uint8_t *p = out + DOORBELL_HDR_SIZE;
-    memcpy(p, panel_mac, 6);
+    memcpy(p, panel_mac, DOORBELL_MAC_SIZE);
     memcpy(p + 6, panel_nonce, DOORBELL_PAIR_NONCE_SIZE);
     memcpy(p + 22, panel_pub, DOORBELL_X25519_PUB_SIZE);
     p[54] = apt_no;
@@ -689,9 +728,8 @@ esp_err_t doorbell_unpack_pair_challenge_header(const uint8_t *buf,
                                                 size_t len,
                                                 doorbell_pair_challenge_t *out_ch)
 {
-    const size_t prefix_len = DOORBELL_HDR_SIZE + 55U;
-    const size_t total_len = prefix_len + DOORBELL_PROVISION_BLOB_ENC_SIZE;
-    if (!buf || !out_ch || len < total_len) {
+    /* The whole frame must be present; the encrypted blob is decrypted separately (doorbell_decrypt_provision_blob) */
+    if (!buf || !out_ch || len < DOORBELL_PAIR_CHALLENGE_FRAME_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     doorbell_hdr_t hdr;
@@ -700,11 +738,10 @@ esp_err_t doorbell_unpack_pair_challenge_header(const uint8_t *buf,
         return ESP_ERR_INVALID_ARG;
     }
     const uint8_t *p = buf + DOORBELL_HDR_SIZE;
-    memcpy(out_ch->panel_mac, p, 6);
+    memcpy(out_ch->panel_mac, p, DOORBELL_MAC_SIZE);
     memcpy(out_ch->panel_nonce, p + 6, DOORBELL_PAIR_NONCE_SIZE);
     memcpy(out_ch->panel_x25519_pub, p + 22, DOORBELL_X25519_PUB_SIZE);
     out_ch->apt_no = p[54];
-    memcpy(out_ch->encrypted_blob, buf + prefix_len, DOORBELL_PROVISION_BLOB_ENC_SIZE);
     return ESP_OK;
 }
 
@@ -713,8 +750,8 @@ esp_err_t doorbell_decrypt_provision_blob(const uint8_t *frame,
                                           const uint8_t k_pair[DOORBELL_KEY_SIZE],
                                           doorbell_provision_blob_t *out_blob)
 {
-    const size_t prefix_len = DOORBELL_HDR_SIZE + 55U;
-    const size_t total_len = prefix_len + DOORBELL_PROVISION_BLOB_ENC_SIZE;
+    const size_t prefix_len = DOORBELL_PAIR_CHALLENGE_PREFIX_SIZE;
+    const size_t total_len = DOORBELL_PAIR_CHALLENGE_FRAME_SIZE;
     if (!frame || !k_pair || !out_blob || frame_len < total_len) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -764,18 +801,10 @@ esp_err_t doorbell_pack_pair_confirm(const doorbell_pair_confirm_t *confirm,
     if (!confirm || !k_pair || !out || !out_len) {
         return ESP_ERR_INVALID_ARG;
     }
-    doorbell_hdr_t hdr = {
-        .magic = DOORBELL_PROTO_MAGIC,
-        .version = DOORBELL_PROTO_VERSION,
-        .msg_type = DOORBELL_MSG_PAIR_CONFIRM,
-        .flags = DOORBELL_FLAG_DIR_UNIT_TO_PANEL,
-        .src_id = confirm->apt_no,
-        .dst_id = DOORBELL_ID_PANEL,
-        .seq_id = 2,
-        .tx_counter = 1,
-    };
-    uint8_t plain[8];
-    memcpy(&plain[0], confirm->unit_mac, 6);
+    doorbell_hdr_t hdr = doorbell_hdr_make(DOORBELL_MSG_PAIR_CONFIRM, DOORBELL_FLAG_DIR_UNIT_TO_PANEL, confirm->apt_no,
+                                           DOORBELL_ID_PANEL, 2, 1);
+    uint8_t plain[DOORBELL_PAIR_CONFIRM_PAYLOAD_SIZE];
+    memcpy(&plain[0], confirm->unit_mac, DOORBELL_MAC_SIZE);
     plain[6] = confirm->apt_no;
     plain[7] = confirm->confirm_status;
 
@@ -794,10 +823,10 @@ esp_err_t doorbell_unpack_pair_confirm(const uint8_t *buf,
     uint8_t plain[16];
     size_t plain_len = 0;
     esp_err_t err = doorbell_frame_decrypt(buf, len, k_pair, &hdr, plain, sizeof(plain), &plain_len);
-    if (err != ESP_OK || hdr.msg_type != DOORBELL_MSG_PAIR_CONFIRM || plain_len < 8) {
+    if (err != ESP_OK || hdr.msg_type != DOORBELL_MSG_PAIR_CONFIRM || plain_len < DOORBELL_PAIR_CONFIRM_PAYLOAD_SIZE) {
         return ESP_ERR_INVALID_MAC;
     }
-    memcpy(out_confirm->unit_mac, &plain[0], 6);
+    memcpy(out_confirm->unit_mac, &plain[0], DOORBELL_MAC_SIZE);
     out_confirm->apt_no = plain[6];
     out_confirm->confirm_status = plain[7];
     return ESP_OK;

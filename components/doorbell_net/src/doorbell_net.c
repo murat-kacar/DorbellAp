@@ -1,7 +1,6 @@
 #include "doorbell_net.h"
 #include "esp_netif.h"
 #include "doorbell_config_checks.h"
-#include "doorbell_protocol.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -14,9 +13,9 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "esp_wifi.h"
+#include "esp_check.h"
 #include "esp_event.h"
 #include "esp_timer.h"
-#include "esp_task_wdt.h"
 #include "esp_random.h"
 #include "esp_log.h"
 #include "mbedtls/platform_util.h"
@@ -26,6 +25,8 @@ static const char *TAG = "doorbell_net";
 #define NET_BIT_CONNECTED  BIT0
 #define NET_BIT_FAIL       BIT1
 #define NET_BIT_AP_STARTED BIT2 /* SoftAP running; its lwIP netif is added and up (set after esp_netif's own handler) */
+#define NET_BIT_SCAN_DONE  BIT3 /* WIFI_EVENT_SCAN_DONE of any scan */
+#define NET_WAIT_SLICE_MS  250
 
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif  = NULL;
@@ -131,7 +132,7 @@ static void schedule_reconnect(void)
     if (base_ms < 1000) {
         base_ms = 1000;
     }
-    /* Add +/- 15% jitter (I-11) */
+    /* Add +/- 1/6 (~17 %) random jitter (I-11) */
     uint32_t jitter_span = base_ms / 6;
     int32_t jitter = (jitter_span > 0) ? ((int32_t)(esp_random() % (2 * jitter_span)) - (int32_t)jitter_span) : 0;
     int64_t delay_ms = (int64_t)base_ms + jitter;
@@ -181,6 +182,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         } else if (event_id == WIFI_EVENT_SCAN_DONE) {
             if (s_scan_pending && s_scan_lock) {
                 scan_collect_results();
+            }
+            if (s_net_evt) {
+                xEventGroupSetBits(s_net_evt, NET_BIT_SCAN_DONE);
             }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -238,9 +242,9 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
         .callback = &reconnect_timer_cb,
         .name = "wifi_reconn",
     };
-    ESP_ERROR_CHECK(esp_timer_create(&t_args, &s_reconnect_timer));
+    ESP_RETURN_ON_ERROR(esp_timer_create(&t_args, &s_reconnect_timer), TAG, "reconnect timer");
 
-    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "esp_netif_init");
     esp_err_t err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
@@ -257,28 +261,25 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
     }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init");
 
     /* Mandatory rule (I-23): Never store credentials in nvs.net80211 */
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "esp_wifi_set_storage");
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
+    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler,
+                                                            NULL, NULL), TAG, "WIFI_EVENT handler");
+    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler,
+                                                            NULL, NULL), TAG, "IP_EVENT handler");
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode");
     apply_sta_protocol();
-    ESP_ERROR_CHECK(esp_wifi_start());
+    /* Starting the radio also makes esp_random() / PSA random true hardware random numbers (I-26): ESP-IDF
+     * initializes PSA Crypto itself at startup, and MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG draws every psa_generate_random()
+     * from the hardware RNG, so keys and nonces generated from here on use RF entropy */
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
 
     /* Mandatory rule (I-70): Disable Wi-Fi power save for bounded 400 ms ACK latency */
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "esp_wifi_set_ps");
 
 #if defined(CONFIG_DOORBELL_WIFI_SET_COUNTRY) && CONFIG_DOORBELL_WIFI_SET_COUNTRY
     if (strlen(CONFIG_DOORBELL_WIFI_COUNTRY_CODE) == 2) {
@@ -286,9 +287,6 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
         ESP_LOGI(TAG, "Applied Wi-Fi country code: %s", CONFIG_DOORBELL_WIFI_COUNTRY_CODE);
     }
 #endif
-
-    /* Initialize PSA Crypto only AFTER esp_wifi_start() has enabled RF hardware RNG entropy (I-26) */
-    ESP_ERROR_CHECK(doorbell_crypto_init());
 
     return ESP_OK;
 }
@@ -471,9 +469,9 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
         IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
     }
 
-    esp_netif_dhcps_stop(s_ap_netif);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_ap_netif, &ip_info));
-    esp_netif_dhcps_start(s_ap_netif);
+    esp_netif_dhcps_stop(s_ap_netif); /* ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED is expected */
+    ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(s_ap_netif, &ip_info), TAG, "SoftAP IP");
+    ESP_RETURN_ON_ERROR(esp_netif_dhcps_start(s_ap_netif), TAG, "SoftAP DHCP server");
 
     if (out_ap_ipv4_host) {
         *out_ap_ipv4_host = ntohl(ip_info.ip.addr);
@@ -504,11 +502,15 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
     }
 
     xEventGroupClearBits(s_net_evt, NET_BIT_AP_STARTED);
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    apply_sta_protocol();
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err == ESP_OK) {
+        apply_sta_protocol();
+        err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    }
     mbedtls_platform_zeroize(&ap_cfg, sizeof(ap_cfg));
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SoftAP '%s' not started: %s", ssid, esp_err_to_name(err));
+        doorbell_net_stop_softap();
         return err;
     }
 
@@ -594,9 +596,24 @@ size_t doorbell_net_get_scan_results(doorbell_net_ap_info_t *out, size_t max, ui
     return n;
 }
 
-esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout_ms)
+/* Wait for @p bit in bounded slices, calling @p on_wait before each one (the caller feeds its watchdog there) */
+static bool wait_bit_sliced(EventBits_t bit, int64_t deadline_us, void (*on_wait)(void *ctx), void *ctx)
 {
-    if (!out_ssid) {
+    while (esp_timer_get_time() < deadline_us) {
+        if (on_wait) {
+            on_wait(ctx);
+        }
+        if (xEventGroupWaitBits(s_net_evt, bit, pdFALSE, pdFALSE, pdMS_TO_TICKS(NET_WAIT_SLICE_MS)) & bit) {
+            return true;
+        }
+    }
+    return false;
+}
+
+esp_err_t doorbell_net_scan_and_join_open_ap(const char *ssid_prefix, char out_ssid[33], uint32_t timeout_ms,
+                                             void (*on_wait)(void *ctx), void *ctx)
+{
+    if (!ssid_prefix || ssid_prefix[0] == '\0' || !out_ssid) {
         return ESP_ERR_INVALID_ARG;
     }
     out_ssid[0] = '\0';
@@ -612,12 +629,13 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
     };
 
-    if (esp_task_wdt_status(NULL) == ESP_OK) {
-        esp_task_wdt_reset();
-    }
-    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
-    if (esp_task_wdt_status(NULL) == ESP_OK) {
-        esp_task_wdt_reset();
+    /* Non-blocking scan, waited for in slices; the deadline covers the scan and the association */
+    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
+    xEventGroupClearBits(s_net_evt, NET_BIT_SCAN_DONE);
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
+    if (err == ESP_OK && !wait_bit_sliced(NET_BIT_SCAN_DONE, deadline_us, on_wait, ctx)) {
+        esp_wifi_scan_stop();
+        err = ESP_ERR_TIMEOUT;
     }
     if (err != ESP_OK) {
         doorbell_net_set_sta_reconnect_paused(false);
@@ -632,11 +650,12 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
         return ESP_ERR_NOT_FOUND;
     }
 
+    size_t prefix_len = strlen(ssid_prefix);
     int found_idx = -1;
     uint16_t match_count = 0;
     for (uint16_t i = 0; i < ap_num; i++) {
-        if (strncmp((const char *)ap_records[i].ssid, "Doorbell-Pair-", 14) == 0 &&
-            ap_records[i].authmode == WIFI_AUTH_OPEN) {
+        if (strncmp((const char *)ap_records[i].ssid, ssid_prefix, prefix_len) == 0 &&
+                ap_records[i].authmode == WIFI_AUTH_OPEN) {
             if (found_idx < 0) {
                 found_idx = (int)i;
             }
@@ -649,8 +668,8 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
         return ESP_ERR_NOT_FOUND;
     }
     if (match_count > 1) {
-        ESP_LOGW(TAG, "Multiple Doorbell-Pair-* SoftAPs found (%u) — aborting to prevent mis-pairing",
-                 (unsigned)match_count);
+        ESP_LOGW(TAG, "Multiple open '%s*' SoftAPs found (%u) — aborting to prevent mis-pairing",
+                 ssid_prefix, (unsigned)match_count);
         doorbell_net_set_sta_reconnect_paused(false);
         return ESP_ERR_INVALID_STATE;
     }
@@ -665,22 +684,7 @@ esp_err_t doorbell_net_scan_and_join_pair_ap(char out_ssid[33], uint32_t timeout
     }
     doorbell_net_set_sta_reconnect_paused(false);
 
-    /* Wait in 250 ms bounded slices so TWDT-subscribed callers never block past the 5 s watchdog timeout (I-46) */
-    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
-    while (esp_timer_get_time() < deadline_us) {
-        if (esp_task_wdt_status(NULL) == ESP_OK) {
-            esp_task_wdt_reset();
-        }
-        EventBits_t bits = xEventGroupWaitBits(s_net_evt,
-                                               NET_BIT_CONNECTED,
-                                               pdFALSE,
-                                               pdFALSE,
-                                               pdMS_TO_TICKS(250));
-        if (bits & NET_BIT_CONNECTED) {
-            return ESP_OK;
-        }
-    }
-    return ESP_ERR_TIMEOUT;
+    return wait_bit_sliced(NET_BIT_CONNECTED, deadline_us, on_wait, ctx) ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 int doorbell_udp_socket_create(uint16_t port, uint32_t bind_ipv4_host, uint32_t rcvtimeo_ms)
@@ -762,39 +766,4 @@ esp_err_t doorbell_udp_send_direct(int sock,
     };
     ssize_t sent = sendto(sock, buf, len, 0, (struct sockaddr *)&dst, sizeof(dst));
     return (sent == (ssize_t)len) ? ESP_OK : ESP_FAIL;
-}
-
-esp_err_t doorbell_udp_send_frame(int sock,
-                                  uint8_t *frame,
-                                  size_t frame_len,
-                                  uint32_t peer_ipv4_host,
-                                  uint16_t port,
-                                  bool is_retry)
-{
-    if (sock < 0 || !frame || frame_len < DOORBELL_MIN_FRAME_SIZE) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /* Attempt 1 (Initial): unicast if peer IP known, else limited broadcast 255.255.255.255 (I-33) */
-    if (!is_retry) {
-        if (peer_ipv4_host != 0 && peer_ipv4_host != 0xFFFFFFFFUL) {
-            doorbell_frame_set_transport_flags(frame, false, false);
-            return doorbell_udp_send_direct(sock, frame, frame_len, peer_ipv4_host, port);
-        } else {
-            doorbell_frame_set_transport_flags(frame, false, true);
-            return doorbell_udp_send_direct(sock, frame, frame_len, 0xFFFFFFFFUL, port);
-        }
-    }
-
-    /* Attempt 2+ (Retry): Dual-path send to BOTH last known unicast IP AND limited broadcast 255.255.255.255 (I-33) */
-    esp_err_t err1 = ESP_OK;
-    if (peer_ipv4_host != 0 && peer_ipv4_host != 0xFFFFFFFFUL) {
-        doorbell_frame_set_transport_flags(frame, true, false);
-        err1 = doorbell_udp_send_direct(sock, frame, frame_len, peer_ipv4_host, port);
-    }
-
-    doorbell_frame_set_transport_flags(frame, true, true);
-    esp_err_t err2 = doorbell_udp_send_direct(sock, frame, frame_len, 0xFFFFFFFFUL, port);
-
-    return (err1 == ESP_OK || err2 == ESP_OK) ? ESP_OK : ESP_FAIL;
 }
