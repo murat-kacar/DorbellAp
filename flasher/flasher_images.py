@@ -194,9 +194,23 @@ def read_flasher_args(build_dir: Path) -> dict[str, Any]:
     def image(name: str) -> tuple[int, Path]:
         return int(args[name]["offset"], 0), build_dir / args[name]["file"]
 
+    if "bootloader" in args:
+        bootloader = image("bootloader")
+    else:
+        # With Secure Boot (Burn) ESP-IDF leaves the bootloader out of the flash arguments (it is flashed once, signed,
+        # by the flasher). Its offset is the ROM's fixed CONFIG_BOOTLOADER_OFFSET_IN_FLASH from the build's sdkconfig.
+        m = re.search(
+            r"^CONFIG_BOOTLOADER_OFFSET_IN_FLASH=(0x[0-9a-fA-F]+)$",
+            (build_dir / "sdkconfig").read_text(encoding="utf-8", errors="ignore"),
+            re.M,
+        )
+        if not m:
+            raise ValueError("bootloader offset neither in flasher_args.json nor in sdkconfig")
+        bootloader = (int(m.group(1), 16), build_dir / "bootloader" / "bootloader.bin")
+
     return {
         "flash_settings": dict(args["flash_settings"]),
-        "bootloader": image("bootloader"),
+        "bootloader": bootloader,
         "partition_table": image("partition-table"),
         "app": image("app"),
     }
