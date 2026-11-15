@@ -9,10 +9,10 @@ extern "C" {
 #endif
 
 /**
- * @brief Pure syntax of a completed keypad sequence (docs/protocol.md §6.2, I-20), without secrets or side effects.
+ * @brief Pure syntax of a completed keypad sequence (docs/protocol.md §6.2), without secrets or side effects.
  *
  * Parsing never compares a code: it only classifies the sequence and checks its shape, so the caller can apply the
- * mode check and the lockout gate and reject malformed input BEFORE any secret comparison (I-20). Pure C without
+ * mode check and the lockout gate and reject malformed input BEFORE any secret comparison. Pure C without
  * ESP-IDF APIs: also built for the linux target by test/host_unit.
  */
 

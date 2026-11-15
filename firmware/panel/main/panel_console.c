@@ -59,7 +59,7 @@ static int cmd_doorbell_status(int argc, char **argv)
 static int cmd_doorbell_wifi(int argc, char **argv)
 {
     /* The REPL adds every line to the in-RAM history before running it; this line may contain the admin code and the
-     * building passphrase, so drop the whole history first - also when the command is malformed (I-25) */
+     * building passphrase, so drop the whole history first - also when the command is malformed */
     linenoiseHistoryFree();
 
     if (argc < 3 || argc > 4) {
@@ -71,20 +71,20 @@ static int cmd_doorbell_wifi(int argc, char **argv)
     const char *new_ssid = argv[2];
     const char *new_pass = (argc >= 4) ? argv[3] : "";
 
-    /* Single-Radio Rule (I-31): never re-target the STA while pairing or the setup portal owns the radio */
+    /* Single-Radio Rule: never re-target the STA while pairing or the setup portal owns the radio */
     if (g_panel_mode != MODE_IDLE) {
         printf("Error: panel is busy (pairing, portal or reset in progress); try again when idle.\n");
         return 1;
     }
 
-    /* Syntax before authentication, as on the keypad (I-20): a malformed request is neither a wrong code nor a
+    /* Syntax before authentication, as on the keypad: a malformed request is neither a wrong code nor a
      * successful login, so it must not touch the shared lockout counter */
     if (!doorbell_net_wifi_creds_valid(new_ssid, new_pass)) {
         printf("Error: invalid SSID or passphrase length.\n");
         return 1;
     }
 
-    /* Authenticated console command (I-14, I-24): constant-time verify & shared lockout */
+    /* Authenticated console command: constant-time verify & shared lockout */
     if (!panel_verify_admin_code_ct(admin_candidate)) {
         printf("Error: authentication failed or panel is in lockout.\n");
         return 1;
@@ -114,7 +114,7 @@ static int cmd_doorbell_wifi(int argc, char **argv)
         return 1;
     }
 
-    /* Never log or echo the passphrase or admin code (I-25) */
+    /* Never log or echo the passphrase or admin code */
     ESP_LOGI(TAG, "Updated building Wi-Fi SSID to '%s' via authenticated UART console", new_ssid);
     doorbell_net_connect_sta(new_ssid, new_pass);
     printf("Wi-Fi credentials saved for SSID '%s'. Connecting...\n", new_ssid);

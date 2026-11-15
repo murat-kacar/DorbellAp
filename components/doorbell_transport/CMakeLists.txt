@@ -1,4 +1,4 @@
-# Protocol frames over UDP: dual-path send (I-29, I-33) and the confirmable request / ACK transaction loop shared by
+# Protocol frames over UDP: dual-path send and the confirmable request / ACK transaction loop shared by
 # the panel (RING) and the apartment module (OPEN_DOOR, HEARTBEAT, PAIR_COMPLETE)
 idf_component_register(
     SRCS "src/doorbell_transport.c"

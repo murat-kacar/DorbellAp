@@ -312,8 +312,8 @@ class DeviceMixin:
             if rc == 0:
                 if panel_fields is not None:
                     wifi = f"SSID='{panel_fields[2]}'" if panel_fields[2] else "SSID=(none)"
-                    # Never log the admin / user code or the Wi-Fi passphrase (I-25)
-                    self.log(f"[{port}] Flash complete: firmware + factory NVS ({wifi}, codes redacted per I-25).\n")
+                    # Never log the admin / user code or the Wi-Fi passphrase
+                    self.log(f"[{port}] Flash complete: firmware + factory NVS ({wifi}, codes redacted).\n")
                 else:
                     self.log(f"[{port}] Flash complete: firmware, blank NVS (module unpaired).\n")
                 self.post_ui(lambda: card.set_status("Flash OK", "#1b7e2b", 100.0))
@@ -437,7 +437,7 @@ class DeviceMixin:
                     images += [(layout["nvs_offset"], enc_file), (layout["nvs_keys_offset"], keys_file)]
                     self.log(
                         f"[{port}] Encrypted NVS ready and verified ({'SSID=' + repr(ssid) if ssid else 'no Wi-Fi'}, "
-                        "codes redacted per I-25).\n"
+                        "codes redacted).\n"
                     )
 
                 # 4. One write: erase everything, write plaintext images; the chip encrypts them itself on first boot.

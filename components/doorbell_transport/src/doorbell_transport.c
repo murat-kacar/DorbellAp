@@ -24,7 +24,7 @@ esp_err_t doorbell_udp_send_frame(int sock,
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Attempt 1 (Initial): unicast if peer IP known, else limited broadcast 255.255.255.255 (I-33) */
+    /* Attempt 1 (Initial): unicast if peer IP known, else limited broadcast 255.255.255.255 */
     if (!is_retry) {
         bool unicast = peer_ip_known(peer_ipv4_host);
         doorbell_frame_set_transport_flags(frame, false, !unicast);
@@ -32,7 +32,7 @@ esp_err_t doorbell_udp_send_frame(int sock,
                                         port);
     }
 
-    /* Attempt 2+ (Retry): Dual-path send to BOTH last known unicast IP AND limited broadcast 255.255.255.255 (I-33) */
+    /* Attempt 2+ (Retry): Dual-path send to BOTH last known unicast IP AND limited broadcast 255.255.255.255 */
     esp_err_t err1 = ESP_FAIL;
     if (peer_ip_known(peer_ipv4_host)) {
         doorbell_frame_set_transport_flags(frame, true, false);

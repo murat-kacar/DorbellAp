@@ -17,7 +17,7 @@ KCONFIG_COMMON_PATH = PROJECT_ROOT / "components" / "doorbell_common" / "Kconfig
 FIRMWARE_DIR = PROJECT_ROOT / "firmware"
 SDKCONFIG_DEFAULTS_PATH = FIRMWARE_DIR / "sdkconfig.defaults"
 
-# Classic ESP32 GPIO rules (I-49)
+# Classic ESP32 GPIO rules
 ESP32_FLASH_GPIOS = {6, 7, 8, 9, 10, 11}
 ESP32_INPUT_ONLY_GPIOS = {34, 35, 36, 37, 38, 39}
 ESP32_VALID_GPIOS = set(range(0, 40)) - {20, 24, 28, 29, 30, 31} - ESP32_FLASH_GPIOS
@@ -82,14 +82,6 @@ GPIO_DIRECTION = {
     "DOORBELL_UNIT_GPIO_RESET_BTN": "in",
 }
 STRING_MAX_LEN = {"DOORBELL_PANEL_KEY_MAP": 12, "DOORBELL_WIFI_COUNTRY_CODE": 2}
-# Not in the form: the blank-NVS fallback codes (derived per build from the code lengths) and the fallback Wi-Fi (Flash
-# writes the card's Wi-Fi into NVS)
-HIDDEN_KCONFIG = {
-    "DOORBELL_PANEL_DEFAULT_ADMIN_CODE",
-    "DOORBELL_PANEL_DEFAULT_USER_CODE",
-    "DOORBELL_PANEL_DEFAULT_WIFI_SSID",
-    "DOORBELL_PANEL_DEFAULT_WIFI_PASS",
-}
 
 
 def load_param_specs(kconfig_paths: list[Path]) -> list[ParamSpec]:
@@ -128,12 +120,7 @@ def load_param_specs(kconfig_paths: list[Path]) -> list[ParamSpec]:
             if item == kconf_lib.MENU:
                 if node.list is not None and kconf_lib.expr_value(node.dep):
                     walk(node.list, node.prompt[0])
-            elif (
-                isinstance(item, kconf_lib.Symbol)
-                and node.prompt
-                and item.name not in HIDDEN_KCONFIG
-                and opts_on.syms[item.name].visibility
-            ):
+            elif isinstance(item, kconf_lib.Symbol) and node.prompt and opts_on.syms[item.name].visibility:
                 kind = kinds[item.type]
                 on = opts_on.syms[item.name]
                 raw = item.str_value if item.visibility else on.str_value

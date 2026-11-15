@@ -23,7 +23,7 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
 esp_err_t doorbell_net_set_hostname(const char *hostname);
 
 /**
- * @brief Configure STA credentials and start connecting (never logs passphrase per I-25).
+ * @brief Configure STA credentials and start connecting (never logs passphrase).
  */
 esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass);
 
@@ -47,7 +47,7 @@ static inline bool doorbell_net_wifi_creds_valid(const char *ssid, const char *p
 esp_err_t doorbell_net_disconnect_sta(void);
 
 /**
- * @brief Pause or resume background STA auto-reconnect (Single-Radio Rule I-31).
+ * @brief Pause or resume background STA auto-reconnect (Single-Radio Rule).
  */
 void doorbell_net_set_sta_reconnect_paused(bool paused);
 
@@ -77,7 +77,7 @@ esp_err_t doorbell_net_get_ap_mac(uint8_t out_mac[6]);
 
 /**
  * @brief Start temporary SoftAP (Open for pairing discovery, or WPA3-SAE for Setup Portal).
- *        Automatically avoids 192.168.4.0/24 subnet collision by switching to 10.195.4.1/24 (I-32).
+ *        Automatically avoids 192.168.4.0/24 subnet collision by switching to 10.195.4.1/24.
  */
 esp_err_t doorbell_net_start_softap(const char *ssid,
                                     const char *wpa3_sae_pass,
@@ -98,7 +98,7 @@ uint16_t doorbell_net_get_softap_sta_count(void);
  * @brief Scan for exactly one open SoftAP whose SSID starts with @p ssid_prefix and connect the STA to it.
  *
  * Waits (scan, then association and DHCP) in 250 ms slices and calls @p on_wait before each one, so a caller
- * subscribed to the task watchdog feeds it there (I-46).
+ * subscribed to the task watchdog feeds it there.
  *
  * @return ESP_OK once associated with an IPv4 lease, ESP_ERR_NOT_FOUND if none is visible, ESP_ERR_INVALID_STATE if
  *         more than one matches (mis-pairing guard), ESP_ERR_TIMEOUT if scan + lease took longer than @p timeout_ms.
@@ -135,7 +135,7 @@ esp_err_t doorbell_net_scan_start_async(void);
 size_t doorbell_net_get_scan_results(doorbell_net_ap_info_t *out, size_t max, uint32_t *out_gen, bool *out_scanning);
 
 /**
- * @brief Create a UDP socket with SO_BROADCAST and bounded SO_RCVTIMEO (I-46).
+ * @brief Create a UDP socket with SO_BROADCAST and bounded SO_RCVTIMEO.
  *
  * @param port UDP port to bind (host byte order, 0 for ephemeral).
  * @param bind_ipv4_host Specific interface IPv4 to bind (host byte order, 0 for INADDR_ANY).
@@ -152,7 +152,7 @@ int doorbell_udp_socket_create(uint16_t port, uint32_t bind_ipv4_host, uint32_t 
 esp_err_t doorbell_net_get_softap_if_name(char out_name[6]);
 
 /**
- * @brief Bind a socket to the SoftAP interface with SO_BINDTODEVICE (I-27, I-47).
+ * @brief Bind a socket to the SoftAP interface with SO_BINDTODEVICE.
  *
  * An IP-only bind is not enough: lwIP uses the weak host model and accepts a packet for the SoftAP address that
  * arrives on the STA interface. A device-bound pcb drops anything not received on the SoftAP netif.

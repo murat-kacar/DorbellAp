@@ -24,7 +24,7 @@
 #define DOORBELL_LED_ACTIVE_HIGH 0
 #endif
 
-/* Pairing completion budget (I-30, I-45): after PAIR_CONFIRM the module must join the building AP (all-channel scan,
+/* Pairing completion budget: after PAIR_CONFIRM the module must join the building AP (all-channel scan,
  * association, DHCP) and still have time for 4 PAIR_COMPLETE attempts + 500 ms margin (unit main.c). Require at least
  * 5 s for the LAN join so a larger ACK timeout cannot silently make every pairing fail. */
 #define DOORBELL_PAIR_LAN_JOIN_MIN_MS 5000
@@ -32,7 +32,7 @@ static_assert((CONFIG_DOORBELL_PAIRING_COMPLETE_TIMEOUT_S * 1000) >=
               (4 * CONFIG_DOORBELL_ACK_TIMEOUT_MS + 500 + DOORBELL_PAIR_LAN_JOIN_MIN_MS),
               "Pairing completion timeout must cover 5 s LAN join + 4 x ACK timeout + 500 ms");
 
-/* Compile-time validation of shared LED pattern timing vs FreeRTOS tick (I-66) */
+/* Compile-time validation of shared LED pattern timing vs FreeRTOS tick */
 static_assert(CONFIG_DOORBELL_LED_SHORT_FLASH_MS >= DOORBELL_TICK_MS,
               "Short flash duration must be at least one FreeRTOS tick");
 static_assert((CONFIG_DOORBELL_LED_FAST_PERIOD_MS / 2) >= DOORBELL_TICK_MS,

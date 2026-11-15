@@ -12,7 +12,7 @@ static const char *TAG = "doorbell_led";
  * duty. "Off" steps stay LED_BLINK_HOLD with LED_STATE_OFF (duty 0). Clamp BRIGHTNESS_DIM to >= 23 because
  * espressif/led_indicator's gamma=2.3 LUT maps inputs 0..22 to 0 (completely dark). LED_BLINK_BRIGHTNESS applies the
  * component's gamma table (CONFIG_USE_GAMMA_CORRECTION), so the dim percentage is perceived brightness, not PWM duty:
- * the 10 % default maps to ~0.4 % duty (docs/protocol.md §7, I-67 — verify visibility on the bench). */
+ * the 10 % default maps to ~0.4 % duty (docs/protocol.md §7). */
 #define BRIGHTNESS_FULL    ((uint32_t)((255U * CONFIG_DOORBELL_LED_FULL_BRIGHTNESS_PCT) / 100U))
 #define BRIGHTNESS_DIM_RAW ((uint32_t)((255U * CONFIG_DOORBELL_LED_DIM_BRIGHTNESS_PCT) / 100U))
 #define BRIGHTNESS_DIM     ((BRIGHTNESS_DIM_RAW < 23U) ? 23U : BRIGHTNESS_DIM_RAW)

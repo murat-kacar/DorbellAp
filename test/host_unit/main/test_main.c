@@ -330,7 +330,7 @@ TEST_CASE("captive DNS: random packets never produce a reply longer than the buf
     }
 }
 
-/* ---- Keypad grammar (docs/protocol.md §6.2, I-20) ---- */
+/* ---- Keypad grammar (docs/protocol.md §6.2) ---- */
 
 static const doorbell_kp_limits_t KP_LIMITS = {
     .min_apt_no = 1,
@@ -391,7 +391,7 @@ TEST_CASE("keypad: user code and admin command shapes", "[keypad]")
     TEST_ASSERT_EQUAL(DOORBELL_KP_CMD_BUILDING_RESET, c.cmd);
     TEST_ASSERT_EQUAL_MEMORY("12345678", c.arg.ptr, 8);
 
-    /* Malformed templates never reach a code comparison (no wrong-code penalty, I-20) */
+    /* Malformed templates never reach a code comparison (no wrong-code penalty) */
     TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*9").kind);          /* unknown command */
     TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678*12*7").kind);       /* two-digit command */
     TEST_ASSERT_EQUAL(DOORBELL_KP_MALFORMED, kp("*12345678**7").kind);         /* empty token */
@@ -400,7 +400,7 @@ TEST_CASE("keypad: user code and admin command shapes", "[keypad]")
     TEST_ASSERT_TRUE(kp("*12345678*9").starred);                                /* still subject to the lockout */
 }
 
-/* ---- Accepted frames and the ACK cache (I-29, I-50, I-62) ---- */
+/* ---- Accepted frames and the ACK cache ---- */
 
 TEST_CASE("rx accept: replay floor, authenticated address change, persist per counter block", "[protocol]")
 {
@@ -409,7 +409,7 @@ TEST_CASE("rx accept: replay floor, authenticated address change, persist per co
     /* Same address, floor within the block: no persist */
     TEST_ASSERT_FALSE(doorbell_rx_accept(&floor, &peer, 0, 5, 0xC0A80105, 0xC0A80105, 100));
     TEST_ASSERT_EQUAL_UINT32(5, floor);
-    /* Address in the payload differs from the packet source: not adopted (I-62) */
+    /* Address in the payload differs from the packet source: not adopted */
     TEST_ASSERT_FALSE(doorbell_rx_accept(&floor, &peer, 0, 6, 0xC0A80109, 0xC0A80107, 100));
     TEST_ASSERT_EQUAL_UINT32(0xC0A80105, peer);
     /* Authenticated new address: adopted and persisted */
@@ -449,22 +449,15 @@ TEST_CASE("dedup cache: only a byte-identical retry is answered from the cache",
     TEST_ASSERT_FALSE(doorbell_dedup_match(&cache, &req_hdr, req, req_len));
 }
 
-/* ---- NVS records (doorbell_storage on the emulated NVS partition, I-5, I-13, I-50) ---- */
+/* ---- NVS records (doorbell_storage on the emulated NVS partition) ---- */
 
-/* tools/panel_cfg_blob.py: pack_panel_cfg_blob("Bina AP", "password123", "12345678", "1234"). The flasher writes this
- * layout into the panel's NVS image; the firmware must read it unchanged (cross-language layout check). */
+/* flasher/flasher_images.py: pack_panel_cfg_blob("Bina AP", "password123", "12345678", "1234"). The flasher writes
+ * this layout into the panel's NVS image; the firmware must read it unchanged (cross-language layout check). */
 static const char GOLDEN_PANEL_CFG_HEX[] =
     "435042440100000042696e61204150000000000000000000000000000000000000000000000000000070617373776f72643132330000"
     "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     "313233343536373800000000313233340000000000000000313233343536373800000000313233340000000000000000000000000000"
     "000030bc7bd7";
-
-static const doorbell_panel_cfg_defaults_t TEST_CFG_DEFAULTS = {
-    .wifi_ssid = "",
-    .wifi_pass = "",
-    .admin_code = "11111111",
-    .user_code = "2222",
-};
 
 static void hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
 {
@@ -490,7 +483,7 @@ TEST_CASE("storage: apartment records and the write-ahead tx counter", "[storage
     doorbell_panel_apt_blob_t apt = {.apt_no = 5, .registered = 1, .tx_counter_ceiling = 10};
     TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_save_apt(&apt));
 
-    /* Counters up to the ceiling need no NVS write; the next one first commits a new block (I-50) */
+    /* Counters up to the ceiling need no NVS write; the next one first commits a new block */
     uint32_t runtime = 9;
     uint32_t ctr = 0;
     TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_next_tx_counter(&apt, &runtime, 100, &ctr));
@@ -547,15 +540,20 @@ TEST_CASE("storage: apartment module state round trip keeps every field", "[stor
     TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_unit_load(&back));
 }
 
-/* One test case: a corrupt panel_cfg write-protects the record for the rest of the process */
-TEST_CASE("storage: flasher panel_cfg layout, factory reset, fail-closed corrupt record", "[storage]")
+/* One test case: unprovisioned and corrupt panel_cfg both fail closed and write-protect panel_cfg */
+TEST_CASE("storage: flasher panel_cfg layout, factory reset, fail-closed missing/corrupt record", "[storage]")
 {
+    /* Blank NVS fails closed and refuses saves until provisioned by the flasher */
+    doorbell_panel_cfg_blob_t cfg;
+    TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_panel_load_cfg(&cfg));
+    TEST_ASSERT_EQUAL(0, cfg.admin_code[0]);
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, doorbell_storage_panel_save_cfg(&cfg));
+
     uint8_t golden[sizeof(doorbell_panel_cfg_blob_t)];
     hex_to_bytes(GOLDEN_PANEL_CFG_HEX, golden, sizeof(golden));
     nvs_write_raw("panel_cfg", golden, sizeof(golden));
 
-    doorbell_panel_cfg_blob_t cfg;
-    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&cfg, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&cfg));
     TEST_ASSERT_EQUAL_STRING("Bina AP", cfg.wifi_ssid);
     TEST_ASSERT_EQUAL_STRING("password123", cfg.wifi_pass);
     TEST_ASSERT_EQUAL_STRING("12345678", cfg.admin_code);
@@ -581,13 +579,13 @@ TEST_CASE("storage: flasher panel_cfg layout, factory reset, fail-closed corrupt
     TEST_ASSERT_EQUAL(0, cfg.wrong_code_count);
     TEST_ASSERT_EQUAL(ESP_ERR_NVS_NOT_FOUND, doorbell_storage_panel_load_apt(9, &apt));
     doorbell_panel_cfg_blob_t reloaded;
-    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&reloaded, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL(ESP_OK, doorbell_storage_panel_load_cfg(&reloaded));
     TEST_ASSERT_EQUAL_STRING("12345678", reloaded.admin_code);
 
-    /* A corrupt record fails closed: it is reported, zeroized in RAM and never overwritten (I-5, I-13) */
+    /* A corrupt record fails closed: it is reported, zeroized in RAM and never overwritten */
     golden[40] ^= 0x01;
     nvs_write_raw("panel_cfg", golden, sizeof(golden));
-    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_CRC, doorbell_storage_panel_load_cfg(&reloaded, &TEST_CFG_DEFAULTS));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_CRC, doorbell_storage_panel_load_cfg(&reloaded));
     TEST_ASSERT_EQUAL(0, reloaded.admin_code[0]);
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, doorbell_storage_panel_save_cfg(&cfg));
 }

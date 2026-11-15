@@ -32,7 +32,7 @@ _Atomic panel_mode_t g_panel_mode = MODE_IDLE;
 uint32_t g_panel_boot_id = 0;
 doorbell_relay_t g_door_relay = {0};
 
-/* Persistent silence-restart backoff in RTC_NOINIT memory protected by magic + CRC32 (I-52) */
+/* Persistent silence-restart backoff in RTC_NOINIT memory protected by magic + CRC32 */
 #define RTC_SILENCE_MAGIC     0x44425254UL /* 'DBRT' */
 #define SILENCE_MAX_TIMEOUT_S (48ULL * 3600ULL)
 /* Backoff doublings needed to reach the 48 h cap from the shortest base (3 x 30 s heartbeat): 2^11 x 90 s > 48 h */
@@ -57,13 +57,13 @@ static atomic_bool s_pending_building_reset = false;
 static atomic_bool s_pending_factory_reset = false;
 
 static uint16_t s_panel_next_seq_id = 1;
-/* panel_cfg could not be loaded at boot: keypad codes are disabled until re-provisioned (fail closed, I-5) */
+/* panel_cfg could not be loaded at boot: keypad codes are disabled until re-provisioned (fail closed) */
 static bool s_panel_cfg_fault = false;
 static uint32_t s_cfg_fault_led_divider = 0;
 static uint32_t s_unregistered_packets = 0;
 static uint32_t s_rejected_messages = 0;
 
-/* ---- RTC Silence Backoff Helpers (I-52) ---- */
+/* ---- RTC Silence Backoff Helpers ---- */
 
 static uint32_t rtc_silence_crc(void)
 {
@@ -111,7 +111,7 @@ static void on_panel_net_state(bool connected, uint32_t ipv4_host, void *ctx)
     }
 }
 
-/* Periodic work while the worker task waits for an ACK: task watchdog (I-46) and door relay safety clamp (I-22) */
+/* Periodic work while the worker task waits for an ACK: task watchdog and door relay safety clamp */
 static void panel_poll_cb(void *ctx)
 {
     (void)ctx;
@@ -311,7 +311,7 @@ void panel_note_module_rx_locked(panel_apt_slot_t *slot, int64_t now_us)
 }
 
 /* Accepted authenticated message: advance the replay floor, learn a changed module IP and persist both in
- * write-ahead blocks (I-50). Caller holds g_panel_mutex. */
+ * write-ahead blocks. Caller holds g_panel_mutex. */
 static void slot_accept_rx_locked(panel_apt_slot_t *slot, uint32_t rx_counter, uint32_t sender_ipv4,
                                   uint32_t from_ip_host)
 {
@@ -324,7 +324,7 @@ static void slot_accept_rx_locked(panel_apt_slot_t *slot, uint32_t rx_counter, u
     }
 }
 
-/* The cache keeps the request's CCM tag so only a byte-identical retry is answered from it (I-29) */
+/* The cache keeps the request's CCM tag so only a byte-identical retry is answered from it */
 void panel_send_ack_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t ack_msg_type, const doorbell_hdr_t *req_hdr,
                            const uint8_t *req_frame, size_t req_len, uint32_t ack_counter, const uint8_t *ack_plain,
                            size_t ack_plain_len, uint32_t to_ip_host)
@@ -340,7 +340,7 @@ void panel_send_ack_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t ack_msg
                              CONFIG_DOORBELL_UDP_PORT);
 }
 
-/* OPEN_DOOR_REQ with reboot-replay / withheld-packet freshness check (I-7, I-18): an unverified request gets a
+/* OPEN_DOOR_REQ with reboot-replay / withheld-packet freshness check: an unverified request gets a
  * STATUS_CHALLENGE ACK, a request echoing the live challenge opens the door. Caller holds g_panel_mutex.
  * @return true if the door relay must be energized (by the caller, after releasing the mutex) */
 static bool handle_open_door_locked(int lan_sock, panel_apt_slot_t *slot, const doorbell_hdr_t *auth_hdr,
@@ -397,7 +397,7 @@ static bool handle_open_door_locked(int lan_sock, panel_apt_slot_t *slot, const 
     return open_door;
 }
 
-/* HEARTBEAT_REQ: liveness, replay floor, telemetry (I-52). Caller holds g_panel_mutex.
+/* HEARTBEAT_REQ: liveness, replay floor, telemetry. Caller holds g_panel_mutex.
  * @return true if @p out_hb holds a valid report to log */
 static bool handle_heartbeat_locked(int lan_sock, panel_apt_slot_t *slot, const doorbell_hdr_t *auth_hdr,
                                     const uint8_t *plain, size_t plain_len, const uint8_t *buf, size_t len,
@@ -426,7 +426,7 @@ static bool handle_heartbeat_locked(int lan_sock, panel_apt_slot_t *slot, const 
     return true;
 }
 
-/* One module frame after the pre-crypto filter: pairing commit, deduplication (I-29), replay check, AEAD, then the
+/* One module frame after the pre-crypto filter: pairing commit, deduplication, replay check, AEAD, then the
  * message handler. Caller holds g_panel_mutex; post-unlock work is returned in @p follow. */
 static void handle_frame_locked(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host,
                                 const doorbell_hdr_t *clear_hdr, lan_followup_t *follow)
@@ -446,7 +446,7 @@ static void handle_frame_locked(int lan_sock, const uint8_t *buf, size_t len, ui
         return;
     }
 
-    /* Duplicate request: re-send the cached ACK (I-29) */
+    /* Duplicate request: re-send the cached ACK */
     if (doorbell_dedup_match(&slot->last_ack, clear_hdr, buf, len)) {
         doorbell_udp_send_direct(lan_sock, slot->last_ack.frame, slot->last_ack.frame_len, from_ip_host,
                                  CONFIG_DOORBELL_UDP_PORT);
@@ -489,7 +489,7 @@ static void handle_lan_packet(int lan_sock, const uint8_t *buf, size_t len, uint
     if (doorbell_hdr_parse(buf, len, &clear_hdr) != ESP_OK) {
         return;
     }
-    /* Pre-crypto destination & direction filter (I-53) */
+    /* Pre-crypto destination & direction filter */
     if (clear_hdr.dst_id != DOORBELL_ID_PANEL ||
             (clear_hdr.flags & DOORBELL_FLAG_DIR_UNIT_TO_PANEL) == 0 ||
             clear_hdr.src_id < CONFIG_DOORBELL_PANEL_MIN_APT_NO ||
@@ -529,7 +529,7 @@ static void handle_lan_packet(int lan_sock, const uint8_t *buf, size_t len, uint
     }
 }
 
-/* ---- RING transaction (I-29, I-33) ---- */
+/* ---- RING transaction ---- */
 
 typedef struct {
     int lan_sock;
@@ -652,7 +652,7 @@ static void execute_ring_transaction(int lan_sock, uint8_t apt_no)
     }
 }
 
-/* ---- Heartbeat Liveness & Silence Restart Monitor (I-52) ---- */
+/* ---- Heartbeat Liveness & Silence Restart Monitor ---- */
 
 static void check_module_health_1s(void)
 {
@@ -697,7 +697,7 @@ static void check_module_health_1s(void)
 #endif
 }
 
-/* ---- Main TWDT-Monitored Worker Task (I-46) ---- */
+/* ---- Main TWDT-Monitored Worker Task ---- */
 
 static void panel_worker_task(void *arg)
 {
@@ -726,7 +726,7 @@ static void panel_worker_task(void *arg)
             panel_lockout_tick_1s();
             panel_portal_tick();
             check_module_health_1s();
-            /* Persistent storage-fault indication (I-13): repeat the error pattern every 10 s */
+            /* Persistent storage-fault indication: repeat the error pattern every 10 s */
             if (s_panel_cfg_fault && (++s_cfg_fault_led_divider >= 10)) {
                 s_cfg_fault_led_divider = 0;
                 doorbell_led_start(LED_PANEL_RESULT_ERR);
@@ -754,28 +754,16 @@ static void panel_worker_task(void *arg)
 
 static void load_panel_cfg(void)
 {
-    /* Bench fallback on blank NVS only; the flasher provisions unique per-device codes (I-5) */
-    static const doorbell_panel_cfg_defaults_t blank_nvs_defaults = {
-        .wifi_ssid = CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_SSID,
-        .wifi_pass = CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_PASS,
-        .admin_code = CONFIG_DOORBELL_PANEL_DEFAULT_ADMIN_CODE,
-        .user_code = CONFIG_DOORBELL_PANEL_DEFAULT_USER_CODE,
-    };
-    esp_err_t cfg_err = doorbell_storage_panel_load_cfg(&g_panel_cfg, &blank_nvs_defaults);
+    esp_err_t cfg_err = doorbell_storage_panel_load_cfg(&g_panel_cfg);
     if (cfg_err != ESP_OK) {
-        /* A corrupt or incompatible panel_cfg blob must not abort() into an endless boot loop that also disables the
-         * keypad. Run with in-RAM Kconfig defaults; nothing is erased at boot (I-13). doorbell_storage refuses to save
-         * panel_cfg in this state, so the stored record (with its unique factory codes, I-5) is never overwritten by
-         * the shared defaults; recovery is a full re-flash with the flasher (I-14). */
-        ESP_LOGE(TAG, "CRITICAL: panel_cfg unreadable (%s) — keypad codes disabled, stored blob left intact; "
-                 "re-flash with the flasher", esp_err_to_name(cfg_err));
-        /* Fail closed (I-5): do NOT fall back to the shared built-in codes, or anyone knowing them could open the door
-         * or run building reset. Admin/user/factory codes stay empty, so ct_equal_code() rejects every keypad and
-         * console code. Visitors can still ring, and residents can still open the door from their modules. */
-        memset(&g_panel_cfg, 0, sizeof(g_panel_cfg));
+        /* A missing or unreadable panel_cfg blob must not abort() into an endless boot loop that disables visitor rings
+         * and apartment-initiated door open, and must never fall back to shared hard-coded codes. Keep codes and
+         * building Wi-Fi empty (fail closed; doorbell_storage leaves any existing blob intact and write-protected)
+         * until provisioned/re-flashed with the flasher. */
+        ESP_LOGE(TAG, "CRITICAL: panel_cfg unavailable (%s) — keypad codes and building Wi-Fi disabled; "
+                 "provision with the flasher", esp_err_to_name(cfg_err));
+        mbedtls_platform_zeroize(&g_panel_cfg, sizeof(g_panel_cfg));
         s_panel_cfg_fault = true;
-        strncpy(g_panel_cfg.wifi_ssid, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_SSID, sizeof(g_panel_cfg.wifi_ssid) - 1);
-        strncpy(g_panel_cfg.wifi_pass, CONFIG_DOORBELL_PANEL_DEFAULT_WIFI_PASS, sizeof(g_panel_cfg.wifi_pass) - 1);
         doorbell_led_start(LED_PANEL_RESULT_ERR);
         return;
     }
@@ -795,7 +783,7 @@ static void load_registrations(void)
     for (unsigned apt = CONFIG_DOORBELL_PANEL_MIN_APT_NO; apt <= CONFIG_DOORBELL_PANEL_MAX_APT_NO; apt++) {
         panel_apt_slot_t *slot = &g_apt_slots[apt];
         if (doorbell_storage_panel_load_apt((uint8_t)apt, &slot->nvs) == ESP_OK && slot->nvs.registered) {
-            /* Resume monotonic counter from reserved write-ahead ceiling (I-50) */
+            /* Resume monotonic counter from reserved write-ahead ceiling */
             slot->runtime_tx_counter = slot->nvs.tx_counter_ceiling;
             slot->persisted_rx_floor = slot->nvs.rx_floor;
             slot->last_heartbeat_us = boot_us;
@@ -815,7 +803,7 @@ void app_main(void)
 
     rtc_silence_init_or_validate();
 
-    /* 1. Boot-safe Door Relay initialization BEFORE any other peripheral (I-22) */
+    /* 1. Boot-safe Door Relay initialization BEFORE any other peripheral */
     ESP_ERROR_CHECK(doorbell_relay_init(&g_door_relay,
                                         CONFIG_DOORBELL_PANEL_GPIO_DOOR_RELAY,
                                         !DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW,
@@ -841,9 +829,9 @@ void app_main(void)
     ESP_ERROR_CHECK(doorbell_led_init(CONFIG_DOORBELL_PANEL_GPIO_STATUS_LED, led_table, LED_PANEL_MAX, LED_PANEL_IDLE));
     doorbell_led_start(LED_PANEL_NET_LOST);
 
-    /* 3. NVS storage initialization — auto-erase strictly forbidden on panel (I-13) */
+    /* 3. NVS storage initialization — auto-erase strictly forbidden on panel */
     if (doorbell_storage_init() != ESP_OK) {
-        /* Storage fault: never erase (I-13). Keep a persistent error indication instead of a one-shot blink. */
+        /* Storage fault: never erase. Keep a persistent error indication instead of a one-shot blink. */
         for (;;) {
             doorbell_led_start(LED_PANEL_RESULT_ERR);
             vTaskDelay(pdMS_TO_TICKS(2000));
@@ -852,10 +840,10 @@ void app_main(void)
     load_panel_cfg();
     load_registrations();
 
-    /* 4. Network initialization (I-38); starting the radio also enables RF RNG entropy (I-26) */
+    /* 4. Network initialization; starting the radio also enables RF RNG entropy */
     ESP_ERROR_CHECK(doorbell_net_init("doorbell-panel", &on_panel_net_state, NULL));
 
-    /* Generate non-zero random 32-bit panel_boot_id after RF entropy is available (I-7, I-26) */
+    /* Generate non-zero random 32-bit panel_boot_id after RF entropy is available */
     do {
         ESP_ERROR_CHECK(doorbell_crypto_random((uint8_t *)&g_panel_boot_id, sizeof(g_panel_boot_id)));
     } while (g_panel_boot_id == 0);
@@ -872,7 +860,7 @@ void app_main(void)
     /* 6. Authenticated UART console initialization (best effort: the panel works without it) */
     panel_console_init();
 
-    /* 7. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT (I-46) */
+    /* 7. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT */
     ESP_ERROR_CHECK(doorbell_twdt_register_timer_pipelines("panel_esp_timer", "panel_rtos_timer"));
 
     /* 8. Start TWDT-monitored panel worker task */

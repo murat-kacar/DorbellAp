@@ -26,13 +26,13 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils, x2551
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from panel_cfg_blob import PANEL_CFG_FORMAT_FULL, pack_panel_cfg_blob
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "flasher"))
 from flasher_images import (  # noqa: E402
+    PANEL_CFG_FORMAT_FULL,
     burn_efuse_problems,
     burn_layout_from_partition_table,
     make_nvs_keys_partition,
+    pack_panel_cfg_blob,
     parse_partition_table,
     validate_wifi_credentials,
     verify_burn_image_signatures,
@@ -40,7 +40,7 @@ from flasher_images import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
-# 1. NVS Blob Layout & Write-Ahead Counter Tests (I-50)
+# 1. NVS Blob Layout & Write-Ahead Counter Tests
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ def test_nvs_blob_layouts_and_write_ahead() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Wire Framing, Nonce Layout & Dual-Path Broadcast AAD Masking (I-8, I-33)
+# 2. Wire Framing, Nonce Layout & Dual-Path Broadcast AAD Masking
 # ---------------------------------------------------------------------------
 
 
@@ -143,7 +143,7 @@ def test_wire_framing_and_ccm_aead() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. X25519 + HKDF-SHA256 Key Agreement & Provisioning Blob Tests (I-8, I-26)
+# 3. X25519 + HKDF-SHA256 Key Agreement & Provisioning Blob Tests
 # ---------------------------------------------------------------------------
 
 

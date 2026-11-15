@@ -1,10 +1,8 @@
 # ADR 0014: Admin and User Code Lengths Are Compile-Time Settings
 
 - **Status:** Accepted.
-- **Date:** recorded retroactively on 2026-11-10. The decision was cited in `AGENTS.md` and `yapilandirma-ayarlari.md`
-  before this file existed (design review `I-56`); the original discussion was not preserved, so this record states the
-  decision and the facts that can be checked in this repository.
-- **Related:** design review `I-4`, `I-5`, `I-6`, `I-56`; [ADR 0013](0013-offline-operation-no-ota.md).
+- **Date:** 2026-11-10
+- **Related:** [ADR 0013](0013-offline-operation-no-ota.md).
 
 ## Decision
 
@@ -19,9 +17,8 @@
 
 | # | Fact | Source |
 | :--- | :--- | :--- |
-| F1 | The setup portal SoftAP is WPA3-SAE with the admin code as passphrase; an IEEE 802.11 passphrase is 8–63 characters, hence the minimum of 8 digits | `firmware/panel/main/Kconfig.projbuild`, `AGENTS.md` (`I-4`) |
+| F1 | The setup portal SoftAP is WPA3-SAE with the admin code as passphrase; an IEEE 802.11 passphrase is 8–63 characters, hence the minimum of 8 digits | `firmware/panel/main/Kconfig.projbuild`, `AGENTS.md` |
 | F2 | Codes are stored in fixed 12-byte fields (`doorbell_panel_cfg_blob_t`), enough for 10 digits + NUL | `components/doorbell_storage/include/doorbell_storage.h` |
-| F3 | The built-in blank-NVS fallback codes must match the configured lengths; checked with `static_assert` | `components/doorbell_common/include/doorbell_config_checks.h` |
 
 ## Consequences
 

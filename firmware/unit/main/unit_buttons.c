@@ -1,4 +1,4 @@
-/* Apartment module buttons (I-63). The callbacks run in the esp_timer task: they only drive the LED and set request
+/* Apartment module buttons. The callbacks run in the esp_timer task: they only drive the LED and set request
  * flags; the work (pairing, door open, reset) runs in unit_worker_task. */
 #include "unit_state.h"
 #include <stdatomic.h>
@@ -27,12 +27,12 @@ static void door_btn_up_cb(void *button_handle, void *usr_data)
         return;
     }
     if (!g_unit_paired) {
-        /* Unpaired door-open press immediately shows no-response blink (I-63) */
+        /* Unpaired door-open press immediately shows no-response blink */
         doorbell_led_start(LED_UNIT_NO_RESPONSE);
         return;
     }
     if (!g_unit_open_door_in_flight) {
-        /* A press while a transaction is in flight or already requested is coalesced (I-63) */
+        /* A press while a transaction is in flight or already requested is coalesced */
         g_unit_open_door_requested = true;
     }
 }
@@ -88,7 +88,7 @@ static void pair_btn_min_hold_cb(void *button_handle, void *usr_data)
         return;
     }
     doorbell_led_start(LED_UNIT_PAIR_HOLD);
-    /* Pre-generate the X25519 keypair on the worker task while the button is held (I-26) */
+    /* Pre-generate the X25519 keypair on the worker task while the button is held */
     g_unit_pregen_x25519_requested = true;
 }
 
@@ -101,7 +101,7 @@ static void pair_btn_up_cb(void *button_handle, void *usr_data)
         return;
     }
     if (g_unit_paired) {
-        /* Already paired: triple-flash cancel to remind the user to reset first (I-63) */
+        /* Already paired: triple-flash cancel to remind the user to reset first */
         doorbell_led_start(LED_UNIT_BTN_CANCEL);
     } else {
         g_unit_pairing_requested = true;

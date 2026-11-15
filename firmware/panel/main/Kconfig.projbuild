@@ -2,20 +2,7 @@
 # components/doorbell_common/Kconfig.projbuild; the flasher builds its form from both files.
 menu "Doorbell panel"
 
-    menu "Building Wi-Fi and setup portal"
-
-        config DOORBELL_PANEL_DEFAULT_WIFI_SSID
-            string "Default Wi-Fi SSID"
-            default ""
-            help
-                Initial building AP SSID used only if NVS has no stored credentials.
-
-        config DOORBELL_PANEL_DEFAULT_WIFI_PASS
-            string "Default Wi-Fi password"
-            default ""
-            help
-                Initial building AP WPA2 passphrase used only if NVS has no stored credentials. Leave empty in
-                version control; provision in the field via the setup web portal (*<admin>*5#) or UART console.
+    menu "Setup portal"
 
         config DOORBELL_PANEL_PORTAL_TIMEOUT_S
             int "Wi-Fi setup portal timeout (s)"
@@ -133,19 +120,6 @@ menu "Doorbell panel"
             default 4
             help
                 Number of digits in the shared building door-open code.
-
-        config DOORBELL_PANEL_DEFAULT_ADMIN_CODE
-            string "Factory default admin code (for initial blank NVS)"
-            default "12345678"
-            help
-                Initial factory admin code written only when NVS is uninitialized. In production, per-device
-                unique codes should be provisioned at factory flashing time.
-
-        config DOORBELL_PANEL_DEFAULT_USER_CODE
-            string "Factory default user code (for initial blank NVS)"
-            default "1234"
-            help
-                Initial factory user door-open code written only when NVS is uninitialized.
 
     endmenu
 

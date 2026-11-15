@@ -9,8 +9,8 @@ Provides a two-column desktop interface:
   2. Role selection (Panel vs Apartment)
   3. Scrollable Kconfig parameter editor with hover tooltips, range checks, and GPIO conflict validation
   4. One-click incremental ESP-IDF build + esptool merge-bin outputting a single
-     timestamped binary (`panel_YYYY-MM-DD_HH-MM-SS.bin` or `apartment_YYYY-MM-DD_HH-MM-SS.bin`)
-     in `flasher/builds/`
+     timestamped binary (`panel_YYYY-MM-DD_HH-MM-SS_<prod|burn>.bin` or
+     `apartment_YYYY-MM-DD_HH-MM-SS_<prod|burn>.bin`) in `flasher/builds/`
   5. Live build and serial operation log
 - Right column ("Detection and flashing"):
   - Auto-detection of connected USB-UART / ESP32 devices (chip revision, MAC, security eFuses)
@@ -477,7 +477,7 @@ class DoorbellFlasherApp(BuildMixin, DeviceMixin):
 
         # Settings both ends of the link depend on must be identical in the panel and apartment builds: a mismatched
         # UDP port or ACK/pairing timing breaks communication, and heartbeats disabled only on the modules would make
-        # the panel's silence restart (I-52) reboot it periodically.
+        # the panel's silence restart reboot it periodically.
         other_vars = self.unit_vars if is_panel else self.panel_vars
         other_name = "Apartment" if is_panel else "Panel"
         for key in INTEROP_KCONFIG_KEYS:
@@ -494,7 +494,7 @@ class DoorbellFlasherApp(BuildMixin, DeviceMixin):
                 )
                 return None
 
-        # Cross-parameter checks (matching doorbell_config_checks.h, I-66)
+        # Cross-parameter checks (matching doorbell_config_checks.h)
         pair_need_ms = 4 * parsed["DOORBELL_ACK_TIMEOUT_MS"] + 500 + 5000
         if parsed["DOORBELL_PAIRING_COMPLETE_TIMEOUT_S"] * 1000 < pair_need_ms:
             messagebox.showerror(

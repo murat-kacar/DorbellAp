@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 /**
- * @brief Boot-safe relay controller with one-shot timer and main-loop safety clamp (I-22).
+ * @brief Boot-safe relay controller with one-shot timer and main-loop safety clamp.
  *
  * is_active and deadline_us are written and read only under the relay lock (portMUX, AGENTS.md §7); read the state
  * with doorbell_relay_is_active(), never the field.
@@ -58,7 +58,7 @@ bool doorbell_relay_is_active(doorbell_relay_t *relay);
 void doorbell_relay_force_off(doorbell_relay_t *relay);
 
 /**
- * @brief Independent safety clamp called periodically from a TWDT-monitored task loop (I-22).
+ * @brief Independent safety clamp called periodically from a TWDT-monitored task loop.
  *        Forces the relay off if it has remained active past pulse_ms + 100 ms margin.
  */
 void doorbell_relay_safety_check(doorbell_relay_t *relay);

@@ -34,7 +34,7 @@ typedef enum {
 extern _Atomic bool g_unit_paired;
 /** The pairing client is running: hold / release events of the hidden buttons are ignored */
 extern _Atomic bool g_unit_pairing_active;
-/** An OPEN_DOOR transaction is running: further door presses are coalesced (I-63) */
+/** An OPEN_DOOR transaction is running: further door presses are coalesced */
 extern _Atomic bool g_unit_open_door_in_flight;
 
 /* Requests from the buttons to unit_worker_task */
@@ -43,12 +43,12 @@ extern _Atomic bool g_unit_pregen_x25519_requested;
 extern _Atomic bool g_unit_pairing_requested;
 extern _Atomic bool g_unit_reset_requested;
 
-/** Door-open, hidden pairing and hidden reset buttons (espressif/button, I-63) */
+/** Door-open, hidden pairing and hidden reset buttons (espressif/button) */
 esp_err_t unit_buttons_init(void);
 
 /* ---- Worker-task services of main.c used by unit_pairing.c ---- */
 
-/** Periodic work while the worker task waits: task watchdog (I-46) and bell relay safety clamp (I-22) */
+/** Periodic work while the worker task waits: task watchdog and bell relay safety clamp */
 void unit_poll(void *ctx);
 
 /** Waits for the *_ACK answering one request; RING_REQs arriving meanwhile are handled as usual */
@@ -75,7 +75,7 @@ esp_err_t unit_run_txn(uint8_t *frame, size_t frame_len, uint32_t peer_ip, uint3
 uint16_t unit_next_seq_id(void);
 void unit_set_apartment_hostname(uint8_t apt_no);
 
-/* ---- Two-phase pairing client (unit_pairing.c, I-26, I-27, I-30, I-45) ---- */
+/* ---- Two-phase pairing client (unit_pairing.c) ---- */
 
 /** What a completed pairing hands to main.c to commit */
 typedef struct {

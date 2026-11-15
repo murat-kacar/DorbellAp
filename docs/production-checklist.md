@@ -15,7 +15,7 @@ Normative references: [AGENTS.md](../AGENTS.md), [docs/protocol.md](protocol.md)
 | 1.2 | Flasher → **1. Profile = Production (release build: -Os)** | Build log shows `Production (-Os)` |
 | 1.3 | Set the same interop values in both role tabs: UDP port, ACK timeout, pairing completion timeout, heartbeat on/off | Flasher does not show "Panel / Apartment Mismatch" |
 | 1.4 | Build **panel** and **apartment** | `[Build] SUCCESS -> flasher/builds/<role>_<ts>_prod.bin`; app partition free space reported ≥ 10 % |
-| 1.5 | Confirm firmware version in `doorbell_config_checks.h` matches the release tag (e.g. `1.1` ↔ `v1.1`) | Heartbeat log prints `fw=1.1` |
+| 1.5 | Confirm firmware version in `firmware/version.txt` matches the release tag (e.g. `1.1` ↔ `v1.1`) | Heartbeat log prints `fw=1.1` |
 | 1.6 | Bench regression on one panel + one module (section 4) before field use | All rows pass |
 | 1.7 | Tag the release commit (`git tag -a vX.Y`) and push the tag | Tag visible on GitHub |
 
@@ -25,15 +25,14 @@ Normative references: [AGENTS.md](../AGENTS.md), [docs/protocol.md](protocol.md)
 | :--- | :--- | :--- |
 | 2.1 | Verify chip: Flasher card shows `ESP32-D0WD-V3 (revision v3.x)`; flash ID must be on ESP-IDF's XMC allow-list or a non-XMC part | Boot log has no `XMC flash startup fail` |
 | 2.2 | Select the `panel_*_prod.bin` image on the card | — |
-| 2.3 | Click **Random** for admin and user codes (unique per device, I-5; lengths follow the selected firmware) | Codes differ from each other and from any other panel |
+| 2.3 | Click **Random** for admin and user codes (unique per device; lengths follow the selected firmware) | Codes differ from each other and from any other panel |
 | 2.4 | Optional: enter building SSID / passphrase if known at the factory | — |
 | 2.5 | **Flash** (erases the whole chip, then writes firmware + codes + optional Wi-Fi; these become the factory values of the hidden reset button) | Status `Flash OK`; log says `codes redacted` |
 | 2.6 | Print the label with admin and user codes and attach it inside the enclosure | Label matches the card fields |
-| 2.7 | **Monitor** → **Status**: boot without `Blank NVS` / `panel_cfg unreadable` warnings | `doorbell_status` prints, no repeating error LED |
-| 2.8 | Clear the card code fields / close the Flasher session (codes are not stored anywhere else, I-15) | — |
+| 2.7 | **Monitor** → **Status**: boot without `panel_cfg unavailable` warnings | `doorbell_status` prints, no repeating error LED |
+| 2.8 | Clear the card code fields / close the Flasher session (codes are not stored anywhere else) | — |
 
-Never ship a panel that booted with `Blank NVS: initializing panel_cfg with built-in default codes`: it runs on the
-shared bench codes. Re-run step 2.5 (Flash).
+An unprovisioned panel fails closed and disables keypad codes until provisioned with step 2.5 (**Flash**).
 
 ## 3. Per apartment module
 
@@ -49,8 +48,7 @@ shared bench codes. Re-run step 2.5 (Flash).
 
 | # | Check | Pass criterion |
 | :--- | :--- | :--- |
-| 4.1 | Building AP meets the AGENTS.md I-9 checklist, including **802.11b rates enabled** | Modules associate; boot log `Station restricted to 802.11b` |
-| 4.1a | Broadcast / client-isolation check (I-9, I-10): two laptops on the building Wi-Fi, one runs `python tools/ap_broadcast_check.py --listen`, the other `--send` (add `--port` if `CONFIG_DOORBELL_UDP_PORT` is not 19500) | Every probe answered; no client isolation |
+| 4.1 | Building AP meets the `AGENTS.md` §2 AP checklist (client isolation disabled, 802.11b rates enabled) | Modules associate; boot log `Station restricted to 802.11b`. If 4.2–4.4 then fail, check the AP for client isolation and broadcast / multicast filtering first |
 | 4.2 | Ring `<apt> #` | Correct module rings |
 | 4.3 | Door open from module button and with `* <user> #` | Relay pulses 0.5 s; module LED 2 s full |
 | 4.4 | Panel reboot, then door open from module | Opens (STATUS_CHALLENGE path) |

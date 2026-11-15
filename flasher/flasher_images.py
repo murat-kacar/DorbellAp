@@ -8,7 +8,6 @@ import json
 import re
 import secrets
 import struct
-import sys
 import zlib
 from collections.abc import Callable
 from pathlib import Path
@@ -21,9 +20,48 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 # flasher_env (stdlib only), not flasher_config: importing this module must not need esp_kconfiglib (CI Python checks)
 from flasher_env import PROJECT_ROOT
 
-# panel_cfg NVS record packer, shared with tools/verify_protocol_vectors.py
-sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-from panel_cfg_blob import pack_panel_cfg_blob  # noqa: E402
+PANEL_CFG_MAGIC = 0x44425043  # 'DBPC'
+PANEL_CFG_BLOB_VERSION = 1
+
+# C struct layout of doorbell_panel_cfg_blob_t (little-endian, 168 bytes total):
+#   uint32_t magic;
+#   uint16_t version;
+#   uint16_t reserved;
+#   char wifi_ssid[33];
+#   char wifi_pass[65];
+#   uint8_t pad[2];
+#   char admin_code[12];
+#   char user_code[12];
+#   char factory_admin_code[12];
+#   char factory_user_code[12];
+#   uint16_t wrong_code_count;
+#   uint16_t lockout_level;
+#   uint32_t lockout_remaining_s;
+#   uint32_t crc32;
+PANEL_CFG_FORMAT_NO_CRC = "<IHH33s65s2s12s12s12s12sHHI"
+PANEL_CFG_FORMAT_FULL = PANEL_CFG_FORMAT_NO_CRC + "I"
+
+
+def pack_panel_cfg_blob(wifi_ssid: str, wifi_pass: str, admin_code: str, user_code: str) -> bytes:
+    """Pack a fresh panel_cfg NVS blob (codes are both active and factory codes, lockout cleared)."""
+    body = struct.pack(
+        PANEL_CFG_FORMAT_NO_CRC,
+        PANEL_CFG_MAGIC,
+        PANEL_CFG_BLOB_VERSION,
+        0,
+        wifi_ssid.encode("utf-8")[:32],
+        wifi_pass.encode("utf-8")[:64],
+        b"\x00\x00",
+        admin_code.encode("ascii")[:10],
+        user_code.encode("ascii")[:8],
+        admin_code.encode("ascii")[:10],
+        user_code.encode("ascii")[:8],
+        0,
+        0,
+        0,
+    )
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return body + struct.pack("<I", crc)
 
 
 def build_info_path(bin_path: Path) -> Path:
@@ -245,7 +283,7 @@ def merge_bin_cmd(
 
 
 def write_panel_nvs_csv(csv_path: Path, fields: tuple[str, str, str, str]) -> None:
-    """nvs_partition_gen input holding the panel_cfg blob (admin, user, ssid, password). Never logged (I-25)."""
+    """nvs_partition_gen input holding the panel_cfg blob (admin, user, ssid, password). Never logged."""
     admin_code, user_code, ssid, pw = fields
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)

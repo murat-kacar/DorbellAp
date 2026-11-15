@@ -1,7 +1,7 @@
 #pragma once
 
 /* Apartment module configuration: Kconfig bools as 0/1 constants and compile-time checks of
- * firmware/unit/main/Kconfig.projbuild (I-49, I-66). The shared checks are in doorbell_config_checks.h. */
+ * firmware/unit/main/Kconfig.projbuild. The shared checks are in doorbell_config_checks.h. */
 #include "doorbell_config_checks.h"
 
 #if CONFIG_DOORBELL_UNIT_BTNS_ACTIVE_LOW

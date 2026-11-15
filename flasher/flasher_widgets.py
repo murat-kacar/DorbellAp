@@ -150,7 +150,7 @@ class SerialMonitorWindow(tk.Toplevel):
             return time.monotonic() < self._echo_mute_until
 
     def _scrub_rx_text(self, text: str, echo_muted: bool) -> str:
-        """Redact secrets from received console text (I-25). `text` must already be ANSI-stripped."""
+        """Redact secrets from received console text. `text` must already be ANSI-stripped."""
         if echo_muted:
             kept: list[str] = []
             suppressed = False
@@ -194,7 +194,7 @@ class SerialMonitorWindow(tk.Toplevel):
                         if tok and tok not in self._redact_tokens:
                             self._redact_tokens.append(tok)
                     self._echo_mute_until = time.monotonic() + self._ECHO_MUTE_S
-                # Quote arguments and escape embedded quotes/backslashes; never log admin code or password (I-25)
+                # Quote arguments and escape embedded quotes/backslashes; never log admin code or password
                 cmd = f'\r\ndoorbell_wifi "{admin}" "{esc_ssid}" "{esc_pw}"\r\n'
                 self._ser.write(cmd.encode("utf-8"))
                 self._append(f"\n[Sent authenticated doorbell_wifi for SSID '{ssid}' (credentials redacted)]\n")

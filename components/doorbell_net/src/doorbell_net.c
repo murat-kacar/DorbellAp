@@ -143,7 +143,7 @@ static void schedule_reconnect(void)
     if (base_ms < 1000) {
         base_ms = 1000;
     }
-    /* Add +/- 1/6 (~17 %) random jitter (I-11) */
+    /* Add +/- 1/6 (~17 %) random jitter */
     uint32_t jitter_span = base_ms / 6;
     int32_t jitter = (jitter_span > 0) ? ((int32_t)(esp_random() % (2 * jitter_span)) - (int32_t)jitter_span) : 0;
     int64_t delay_ms = (int64_t)base_ms + jitter;
@@ -274,7 +274,7 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init");
 
-    /* Mandatory rule (I-23): Never store credentials in nvs.net80211 */
+    /* Never store credentials in nvs.net80211 */
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "esp_wifi_set_storage");
 
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler,
@@ -284,12 +284,12 @@ esp_err_t doorbell_net_init(const char *hostname, doorbell_net_state_cb_t cb, vo
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode");
     apply_sta_protocol();
-    /* Starting the radio also makes esp_random() / PSA random true hardware random numbers (I-26): ESP-IDF
+    /* Starting the radio also makes esp_random() / PSA random true hardware random numbers: ESP-IDF
      * initializes PSA Crypto itself at startup, and MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG draws every psa_generate_random()
      * from the hardware RNG, so keys and nonces generated from here on use RF entropy */
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
 
-    /* Mandatory rule (I-70): Disable Wi-Fi power save for bounded 400 ms ACK latency */
+    /* Disable Wi-Fi power save for bounded 400 ms ACK latency */
     ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "esp_wifi_set_ps");
 
 #if defined(CONFIG_DOORBELL_WIFI_SET_COUNTRY) && CONFIG_DOORBELL_WIFI_SET_COUNTRY
@@ -323,14 +323,14 @@ esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass)
         strncpy((char *)wifi_cfg.sta.password, pass, sizeof(wifi_cfg.sta.password) - 1);
     }
 
-    /* Strongest-signal multi-AP selection (I-35) */
+    /* Strongest-signal multi-AP selection */
     wifi_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     wifi_cfg.sta.threshold.authmode = (pass && pass[0] != '\0') ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     wifi_cfg.sta.pmf_cfg.capable = true;
     wifi_cfg.sta.pmf_cfg.required = false;
 
-    /* Never log passphrase (I-25) */
+    /* Never log passphrase */
     ESP_LOGI(TAG, "Configuring STA for SSID '%s'", ssid);
 
     s_sta_has_creds = true;
@@ -341,7 +341,7 @@ esp_err_t doorbell_net_connect_sta(const char *ssid, const char *pass)
 
     /* Drop the old association state synchronously. The WIFI_EVENT_STA_DISCONNECTED event for the old link arrives
      * asynchronously, so without this doorbell_net_wait_for_sta_ip() would report the OLD connection as success and
-     * the portal would commit untested credentials (I-40). */
+     * the portal would commit untested credentials. */
     bool was_connected = s_sta_connected;
     s_sta_connected = false;
     s_sta_ipv4_host = 0;
@@ -464,7 +464,7 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Subnet Collision Check (I-32): if STA subnet is 192.168.4.0/24, switch SoftAP to 10.195.4.1/24 */
+    /* Subnet collision check: if STA subnet is 192.168.4.0/24, switch SoftAP to 10.195.4.1/24 */
     uint32_t check_ip = s_sta_ipv4_host ? s_sta_ipv4_host : s_last_sta_ipv4_host;
     bool collision = ((check_ip & 0xFFFFFF00UL) == 0xC0A80400UL); /* 192.168.4.0/24 */
 
@@ -473,7 +473,7 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
         IP4_ADDR(&ip_info.ip, 10, 195, 4, 1);
         IP4_ADDR(&ip_info.gw, 10, 195, 4, 1);
         IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
-        ESP_LOGW(TAG, "STA subnet 192.168.4.0/24 detected — switching SoftAP to 10.195.4.1/24 (I-32)");
+        ESP_LOGW(TAG, "STA subnet 192.168.4.0/24 detected — switching SoftAP to 10.195.4.1/24");
     } else {
         IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
         IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
@@ -499,16 +499,16 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
     strncpy((char *)ap_cfg.ap.ssid, ssid, sizeof(ap_cfg.ap.ssid) - 1);
     ap_cfg.ap.ssid_len = (uint8_t)strlen(ssid);
     ap_cfg.ap.channel = primary_ch;
-    ap_cfg.ap.max_connection = 4; /* Mandatory rule (I-70) */
+    ap_cfg.ap.max_connection = 4;
 
     if (wpa3_sae_pass && wpa3_sae_pass[0] != '\0') {
-        /* Setup Web Portal: WPA3-Personal (SAE with PMF required, I-4) */
+        /* Setup Web Portal: WPA3-Personal (SAE with PMF required) */
         strncpy((char *)ap_cfg.ap.password, wpa3_sae_pass, sizeof(ap_cfg.ap.password) - 1);
         ap_cfg.ap.authmode = WIFI_AUTH_WPA3_PSK;
         ap_cfg.ap.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
         ap_cfg.ap.pmf_cfg.required = true;
     } else {
-        /* Pairing Discovery SoftAP: Open (I-27) */
+        /* Pairing Discovery SoftAP: Open */
         ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
 
@@ -525,8 +525,8 @@ esp_err_t doorbell_net_start_softap(const char *ssid,
         return err;
     }
 
-    /* Callers bind sockets to this netif (SO_BINDTODEVICE, I-27/I-47) right after we return, so wait until the
-     * SoftAP has started and its netif exists. Bounded well below the 5 s TWDT (I-46). */
+    /* Callers bind sockets to this netif (SO_BINDTODEVICE) right after we return, so wait until the
+     * SoftAP has started and its netif exists. Bounded well below the 5 s TWDT. */
     EventBits_t bits = xEventGroupWaitBits(s_net_evt, NET_BIT_AP_STARTED, pdFALSE, pdTRUE, pdMS_TO_TICKS(2000));
     if (!(bits & NET_BIT_AP_STARTED) || !esp_netif_is_netif_up(s_ap_netif)) {
         ESP_LOGE(TAG, "SoftAP '%s' did not start within 2 s", ssid);

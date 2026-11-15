@@ -15,8 +15,8 @@ Wi-Fi with authenticated, encrypted UDP (AES-CCM, X25519 + HKDF pairing); there 
 | `firmware/sdkconfig.defaults` | ESP-IDF settings of both roles (each project is its role; role settings in `firmware/<role>/main/Kconfig.projbuild`) |
 | `firmware/sdkconfig.burn`, `firmware/partitions_burn.csv` | Burn profile overlay and partition table ([ADR 0015](docs/adr/0015-production-security-hardening.md)) |
 | `flasher/` | Tk GUI: configure, build, flash / burn, serial monitor (`run_flasher.bat` on Windows) |
-| `tools/` | Host protocol test vectors, NVS record packer, Burn build check, building-AP broadcast check |
-| `docs/` | Protocol specification, ADRs, production checklist, design review |
+| `tools/` | Host protocol test vectors, Burn build verification |
+| `docs/` | Protocol specification, ADRs, production checklist |
 
 ## Build and flash
 
@@ -29,8 +29,10 @@ Requirements: ESP-IDF **v6.1** (EIM install) and an ESP32-D0WD-V3 (rev v3.x) boa
 3. On the device card select the image and click **Flash** (or **Burn**). Flashing erases the chip and writes the
    firmware together with the panel's admin / user codes and optional building Wi-Fi from the card.
 
-Plain ESP-IDF works too: `idf.py -C firmware/panel build` (the flasher additionally writes the codes and Wi-Fi). The
-resolved `sdkconfig` lives in `firmware/<role>/build/`, the same one the flasher's Production build uses.
+Plain ESP-IDF builds the same firmware: `idf.py -C firmware/panel build`. The resolved `sdkconfig` lives in
+`firmware/<role>/build/`, the same one the flasher's Production build uses. A panel flashed without the flasher has
+no codes and no building Wi-Fi in NVS: it fails closed (keypad codes disabled, error LED every 10 s) until it is
+provisioned with the flasher's **Flash**.
 
 ## Documentation
 

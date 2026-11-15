@@ -50,7 +50,7 @@ esp_err_t doorbell_relay_init(doorbell_relay_t *relay,
     relay->on_deenergize = on_deenergize;
     relay->cb_ctx = cb_ctx;
 
-    /* Boot-safe rule (I-22): write inactive output latch level BEFORE configuring GPIO output driver */
+    /* Boot-safe rule: write inactive output latch level BEFORE configuring GPIO output driver */
     ESP_RETURN_ON_ERROR(gpio_set_level(gpio_num, relay->inactive_level), TAG, "preset inactive level");
 
     gpio_config_t io_conf = {
@@ -141,7 +141,7 @@ void doorbell_relay_safety_check(doorbell_relay_t *relay)
     int64_t deadline_us = relay->deadline_us;
     taskEXIT_CRITICAL(&s_relay_lock);
 
-    /* Independent safety clamp with 100 ms grace margin (I-22) */
+    /* Independent safety clamp with 100 ms grace margin */
     if (active && deadline_us > 0 && esp_timer_get_time() > (deadline_us + 100000LL)) {
         ESP_LOGW(TAG, "Safety clamp forced relay off on GPIO %d", (int)relay->gpio_num);
         doorbell_relay_force_off(relay);

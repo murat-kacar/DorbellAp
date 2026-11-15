@@ -147,7 +147,7 @@ static void html_escape(const char *src, char *dst, size_t dst_cap)
 
 static esp_err_t portal_get_root_handler(httpd_req_t *req)
 {
-    /* Strict interface binding check (I-47): reject requests from building LAN */
+    /* Strict interface binding check: reject requests from building LAN */
     if (!is_request_on_softap_interface(req)) {
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
         return ESP_FAIL;
@@ -234,7 +234,7 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
              selected < 0 ? " checked" : "", esc);
     httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
 
-    /* Never echo the stored passphrase (I-47) */
+    /* Never echo the stored passphrase */
     httpd_resp_send_chunk(req,
                           "<label>Bina Wi-Fi şifresi (WPA2/WPA3):</label>"
                           "<input type=\"password\" name=\"password\" maxlength=\"63\" "
@@ -280,7 +280,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
 
     /* recv_wait_timeout is 2 s (panel_portal_start), so each recv is short. Retry on timeout like the ESP-IDF
      * http_server examples, but give up as soon as the portal is stopping: panel_portal_stop() runs in the
-     * TWDT-subscribed worker and httpd_stop() waits for this handler to return (I-46). */
+     * TWDT-subscribed worker and httpd_stop() waits for this handler to return. */
     int received = 0;
     int64_t body_deadline_us = esp_timer_get_time() + 10000000LL;
     while (received < total_len) {
@@ -346,7 +346,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Test-Before-Commit (I-40): attempt STA connection for up to 15 seconds while keeping SoftAP open */
+    /* Test-Before-Commit: attempt STA connection for up to 15 seconds while keeping SoftAP open */
     ESP_LOGI(TAG, "Testing submitted Wi-Fi credentials for SSID '%s' (15 s timeout)", new_ssid);
     s_portal_testing = true;
     s_portal_deadline_us = esp_timer_get_time() + 30000000LL;
@@ -428,7 +428,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Connection failed: roll back to previous NVS credentials and keep portal open (I-40) */
+    /* Connection failed: roll back to previous NVS credentials and keep portal open */
     mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
     ESP_LOGW(TAG, "Test association to '%s' failed — rolling back to previous Wi-Fi credentials", new_ssid);
 
@@ -461,7 +461,7 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
  * iOS: captive.apple.com/hotspot-detect.html, Windows: msftconnecttest.com/connecttest.txt). The SoftAP's DHCP server
  * already offers the panel IP as DNS server; answering every A query with that IP and redirecting unknown paths to
  * the form makes the phone show its "sign in to network" page with the form, instead of routing the setup page to
- * mobile data. Bound to the SoftAP interface (I-47) and running only while the portal is open. */
+ * mobile data. Bound to the SoftAP interface and running only while the portal is open. */
 
 #define PORTAL_DNS_PORT        53
 #define PORTAL_DNS_BUF_LEN     512  /* classic DNS-over-UDP maximum */
@@ -564,7 +564,7 @@ esp_err_t panel_portal_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Single-Radio Rule (I-31): pause background STA channel scan while portal is open */
+    /* Single-Radio Rule: pause background STA channel scan while portal is open */
     doorbell_net_set_sta_reconnect_paused(true);
 
     uint32_t ap_ip = 0;
@@ -579,12 +579,12 @@ esp_err_t panel_portal_start(void)
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     /* httpd_stop() (called from the TWDT-subscribed worker) waits for an in-flight handler, so keep each socket wait
-     * at 2 s: bounded well inside the 5 s TWDT window (I-46), yet tolerant of a slow or briefly interrupted SoftAP
+     * at 2 s: bounded well inside the 5 s TWDT window, yet tolerant of a slow or briefly interrupted SoftAP
      * link while request headers arrive or the result page is sent. */
     config.recv_wait_timeout = 2;
     config.send_wait_timeout = 2;
 
-    /* Bind the listener to the SoftAP netif (SO_BINDTODEVICE, I-47). The getsockname() check in the handlers stays as
+    /* Bind the listener to the SoftAP netif (SO_BINDTODEVICE). The getsockname() check in the handlers stays as
      * defense in depth, but on its own it can be bypassed: lwIP's weak host model accepts a packet for the SoftAP IP
      * that arrives on the STA (building LAN) interface. Static: httpd keeps the if_name pointer in its config copy. */
     static struct ifreq ap_ifr;
@@ -626,7 +626,7 @@ esp_err_t panel_portal_start(void)
     /* Every connectivity probe is a 404 before the redirect; keep them out of the log */
     esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
     portal_dns_start();
-    /* Network list for the form; usually finished before the installer's phone has joined (I-31: one-shot scan,
+    /* Network list for the form; usually finished before the installer's phone has joined (one-shot scan,
      * returning to the SoftAP channel between scanned channels, never a background scan) */
     doorbell_net_scan_start_async();
 
@@ -637,7 +637,7 @@ esp_err_t panel_portal_start(void)
     s_sta_cfg_untested = false;
     s_portal_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_DOORBELL_PANEL_PORTAL_TIMEOUT_S * 1000000LL;
 
-    /* 2 s solid confirmation followed by 1 Hz slow blink while portal is open (I-40, §7.1) */
+    /* 2 s solid confirmation followed by 1 Hz slow blink while portal is open (docs/protocol.md §7.1) */
     doorbell_led_start(LED_PANEL_PORTAL);
     doorbell_led_start(LED_PANEL_RESULT_OK);
 

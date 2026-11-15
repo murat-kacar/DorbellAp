@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /**
- * @brief Register TWDT health users for both timer pipelines (I-46).
+ * @brief Register TWDT health users for both timer pipelines.
  *
  * A 1 s periodic esp_timer and a 1 s periodic FreeRTOS software timer each feed their own TWDT user, so a deadlock
  * in the esp_timer task (relay de-energize, LED stop timers) or in the FreeRTOS timer service task (led_indicator

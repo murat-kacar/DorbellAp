@@ -15,7 +15,7 @@ extern "C" {
 /* Per-apartment arrays are indexed by apartment number; index 0 (the panel's protocol id) is unused */
 #define DOORBELL_APT_SLOT_COUNT (DOORBELL_APT_NO_MAX + 1)
 
-/* Every record starts with magic + version and ends with a CRC32 over all preceding bytes (I-50) */
+/* Every record starts with magic + version and ends with a CRC32 over all preceding bytes */
 
 typedef struct {
     uint32_t magic;
@@ -80,27 +80,18 @@ typedef struct {
 } doorbell_unit_state_blob_t;
 
 /**
- * @brief Initialize NVS flash without auto-erasing on error (I-13).
+ * @brief Initialize NVS flash without auto-erasing on error.
  */
 esp_err_t doorbell_storage_init(void);
 
 /* ---- Panel Storage API ---- */
 
-/** Values of a fresh panel_cfg on blank NVS (bench boards; the flasher provisions unique codes, I-5) */
-typedef struct {
-    const char *wifi_ssid;
-    const char *wifi_pass;
-    const char *admin_code; /**< also the factory admin code */
-    const char *user_code;  /**< also the factory user code */
-} doorbell_panel_cfg_defaults_t;
-
 /**
- * Load panel_cfg. On blank NVS (no record) the record is initialized from @p blank_nvs_defaults and saved. An existing
- * but unreadable record (size / magic / version / CRC) returns an error and write-protects panel_cfg for this boot,
- * so its unique factory codes (I-5) are never overwritten.
+ * Load panel_cfg from NVS. Fails closed when unprovisioned (ESP_ERR_NVS_NOT_FOUND) or unreadable
+ * (size / magic / version / CRC), zeroizing @p out_cfg and write-protecting panel_cfg for this boot so an existing
+ * record with unique factory codes is never overwritten.
  */
-esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg,
-                                          const doorbell_panel_cfg_defaults_t *blank_nvs_defaults);
+esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg);
 esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg);
 
 /** Read the factory Wi-Fi record (ESP_ERR_NVS_NOT_FOUND if none was recorded yet). */
@@ -129,7 +120,7 @@ esp_err_t doorbell_storage_panel_erase_apt(uint8_t apt_no);
 esp_err_t doorbell_storage_panel_erase_all_apts(uint8_t min_apt, uint8_t max_apt);
 
 /**
- * @brief RFC 8613 write-ahead counter allocation for Panel -> Unit frames (I-50).
+ * @brief RFC 8613 write-ahead counter allocation for Panel -> Unit frames.
  *        Commits a new +block ceiling to NVS before returning any counter above the current ceiling.
  */
 esp_err_t doorbell_storage_panel_next_tx_counter(doorbell_panel_apt_blob_t *apt,
@@ -143,7 +134,7 @@ esp_err_t doorbell_storage_unit_save(doorbell_unit_state_blob_t *state);
 esp_err_t doorbell_storage_unit_erase(void);
 
 /**
- * @brief RFC 8613 write-ahead counter allocation for Unit -> Panel frames (I-50).
+ * @brief RFC 8613 write-ahead counter allocation for Unit -> Panel frames.
  */
 esp_err_t doorbell_storage_unit_next_tx_counter(doorbell_unit_state_blob_t *state,
                                                 uint32_t *in_out_runtime_counter,

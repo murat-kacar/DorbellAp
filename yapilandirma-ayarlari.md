@@ -5,7 +5,6 @@ derleme sırasında gömülür. Bir ayarı değiştirdikten sonra firmware'i yen
 Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı veya seri konsoldan da değiştirilebilir).
 
 - **Varsayılan** sütunu, hiçbir şey değiştirilmediğinde kullanılan değerdir.
-- Bazı varsayılanlar henüz tezgahta veya sahada doğrulanmadı; bunlar "ölçülecek" diye işaretlidir.
 - **Doorbell network** menüsündeki ortak ayarlar (`UDP port`, `Heartbeat interval` vb.) panelde ve tüm daire
   modüllerinde **aynı** olmalıdır (panel ayrıca eşleştirme sırasında `Heartbeat interval` değerini modüle aktarır).
 - Ortak ayarlar `components/doorbell_common/Kconfig.projbuild`, panele ve modüle özel ayarlar ise
@@ -24,7 +23,7 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 | :--- | :--- | :--- |
 | UDP port | 19500 | Panel ve daire modüllerinin UDP haberleşmesinde kullandığı port (IANA listesinde atanmamış User Port aralığındadır ve lwIP ephemeral port aralığı olan 49152–65535 ile çakışmaz). |
 | Set a Wi-Fi country code | Kapalı | Açılırsa aşağıdaki ülke kodu uygulanır. Kapalıyken ESP-IDF'in varsayılan ülke ayarı (`01` — kanal 1–11 aktif, kanal 12–13 pasif tarama) kullanılır. |
-| Country code | (boş) | İki harfli ülke kodu, örn. `TR` (kanal 1–13, maks. 20 dBm). Bina AP'si kanal 12 veya 13'te çalışıyorsa açılmalıdır. |
+| Country code | `TR` | İki harfli ülke kodu, örn. `TR` (kanal 1–13, maks. 20 dBm). Bina AP'si kanal 12 veya 13'te çalışıyorsa açılmalıdır. |
 | Restrict the station interface to 802.11b | Açık | Cihaz bina AP'sine yalnızca 802.11b hızlarıyla (1–11 Mbps) bağlanır. Düşük hızlar daha zayıf sinyalde çalıştığı için menzili artırabilir. Bina AP'sinde "802.11b'yi kapat" veya 11 Mbps üzeri asgari hız ayarı varsa cihaz bağlanamaz; bu durumda AP ayarı değiştirilmeli ya da bu seçenek kapatılmalıdır. Kapatılırsa ESP-IDF varsayılanı (802.11b/g/n) kullanılır. |
 
 - **Bina erişim noktası (AP) ve ağ kurulum kontrol listesi:**
@@ -56,7 +55,7 @@ Wi-Fi adı ve şifresi NVS'de tutulduğu için yeniden derlemeden web portalı v
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| Application ACK timeout | 400 ms | Zil, kapı açma veya durum raporu gönderildikten sonra "aldım" cevabının (ACK) her denemede ne kadar bekleneceği (±25 ms rastgele sapma ile). Masada ve sahada doğrulandı. Panel ve modülde **aynı** olmalıdır (Flasher farklıysa derlemeyi durdurur). |
+| Application ACK timeout | 400 ms | Zil, kapı açma veya durum raporu gönderildikten sonra "aldım" cevabının (ACK) her denemede ne kadar bekleneceği (±25 ms rastgele sapma ile). Panel ve modülde **aynı** olmalıdır (Flasher farklıysa derlemeyi durdurur). |
 | Pairing completion timeout | 10 s | Modül yakalandıktan sonra bina erişim noktasına (AP) bağlanıp DHCP'den IP alarak son onayı (`PAIR_COMPLETE`) göndermesi için tanınan ek tamamlama süresi. En az `5 s + 4 × ACK timeout + 0,5 s` olmalıdır (400 ms ile 7,1 s); daha kısaysa derleme hata verir. Panel ve modülde **aynı** olmalıdır. |
 | Replay counter NVS block size | 100 | Mesaj sayacının flash'a kaç mesajda bir önceden ayrılarak (write-ahead) yazıldığı. |
 | Module health reports (heartbeat) | Açık | Her modül belirli aralıklarla panele onaylı durum raporu gönderir; panel her raporu loglar ve `ACK` döner. Kapatılırsa "no report" uyarıları, sessizlikte yeniden başlatma ve modülün "panele ulaşılamıyor" LED uyarısı devre dışı kalır. |
@@ -87,12 +86,10 @@ gelmezse panel "no report" uyarısı yazar; modül ise panelden henüz doğrulan
 
 ## 2. Doorbell panel (yalnızca panel)
 
-### 2.1. Bina Wi-Fi ve kurulum portalı (yalnızca panel)
+### 2.1. Kurulum portalı (yalnızca panel)
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| Default Wi-Fi SSID | `(boş)` | Bina erişim noktasının (AP) başlangıç Wi-Fi adı. Yalnızca ilk açılışta NVS boşsa kullanılır. |
-| Default Wi-Fi password | `(boş)` | Bina erişim noktasının başlangıç WPA2 şifresi (kaynak kod deposuna gerçek şifre yazılmaması için varsayılanı boştur). Sahada `* <yönetici> * 5 #` portalı veya UART konsolu ile NVS'ye kaydedilir. |
 | Wi-Fi setup portal timeout | 120 s | Panelde `* <yönetici> * 5 #` komutu girildiğinde açılan `Doorbell-Setup` kurulum ağının (`http://192.168.4.1`) açık kalma süresi (2 dakika). |
 
 ### 2.2. GPIO (Klasik ESP32)
@@ -215,9 +212,9 @@ dakika, 1 saat, 2 saat … ve en fazla 48 saat. İlk doğrulanmış rapor geldi�
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| LED is on when the GPIO is HIGH | Açık | LED kutbu. LED ters çalışıyorsa (beklemede yanık) kapatın. Kart şemasına göre doğrulanmadı. |
+| LED is on when the GPIO is HIGH | Açık | LED kutbu. LED ters çalışıyorsa (beklemede yanık) kapatın. |
 | Full brightness | %100 | Tam parlaklık (`led_indicator` gama düzeltmeli maksimum seviye: 255) |
-| Dim brightness | %10 | Modülün "loş, sabit" (normal) durumundaki algılanan parlaklık (gama düzeltmesi sonrasında tezgahta görünürlüğü doğrulanacak) |
+| Dim brightness | %10 | Modülün "loş, sabit" (normal) durumundaki algılanan parlaklık |
 
 **Pattern timing:** LED desenlerinin süreleri. Kısa flaş 50 ms, hızlı yanıp sönme periyodu 200 ms, orta 500 ms,
 yavaş 1000 ms (1 Hz), çift/üçlü flaş darbesi 100 ms, arası 100 ms, tekrar periyodu 1000 ms, seyrek flaş aralığı
@@ -242,6 +239,6 @@ bileşenlerine aittir. Bir sebep olmadıkça varsayılanda bırakın.
 | Task watchdog / panic / timeout | Panic açık, 5 s | Kilitlenen veya CPU'yu bırakmayan bir görevde cihazı yeniden başlatır. Uygulama görevleri ve zamanlayıcı hatları watchdog'a kaydedilir. Panic kapatılırsa watchdog sadece uyarı yazar. |
 | Console UART / baud rate | UART0 / 115200 | Seri monitör portu ve hızı |
 | Flash mode / frequency / size | DIO / 40 MHz / 2 MB | Flash bellek ayarları. Boyut 2 MB'tır; kartla uyumlu olmalı (OTA kullanılmaz, [ADR 0013](docs/adr/0013-offline-operation-no-ota.md)). |
-| Compiler optimization | Size (`-Os`) | Production ve Burn aynı küçültülmüş derlemeyi kullanır; 1 MB'lık uygulama bölümünde yer açar (ESP-IDF varsayılanı `-Og` panel için alanı neredeyse dolduruyordu). Assert kontrolleri açıktır. Production profili eFuse yakmaz. |
+| Compiler optimization | Size (`-Os`) | Production ve Burn aynı küçültülmüş derlemeyi kullanır; 1 MB'lık uygulama bölümünde yer açar (boyut için optimize edilmiş derleme). Assert kontrolleri açıktır. Production profili eFuse yakmaz. |
 | Burn profili (kilitli cihaz) | Kapalı (yalnızca Burn seçilince) | Production derlemesine ek olarak Secure Boot v2, flash şifreleme (release), NVS şifreleme ve UART indirme modunun kalıcı kapatılmasını açar (`firmware/sdkconfig.burn`, `firmware/partitions_burn.csv`, ADR 0015). Kart ilk açılışta eFuse yakar: bir daha firmware yüklenemez, okunamaz, silinemez. Şifreler, Wi-Fi ve eşleştirme çalışma sırasında değiştirilebilir kalır; derleme ayarları (bu tablodaki tüm satırlar) değiştirilemez. Saklanacak bir anahtar yoktur: her Burn derlemesi kendi tek kullanımlık imza anahtarını üretir, firmware'i imzalar ve anahtarı siler. |
 | Default log verbosity | Info | Monitörde ne kadar ayrıntı görüneceği (şifreler ve anahtarlar hiçbir seviyede loglanmaz). |

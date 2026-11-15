@@ -1,4 +1,4 @@
-/* Two-phase pairing server of the panel (I-26, I-27, I-30, I-31, I-45): open SoftAP discovery window, PAIR_HELLO
+/* Two-phase pairing server of the panel: open SoftAP discovery window, PAIR_HELLO
  * collision window, PAIR_CHALLENGE / PAIR_CONFIRM on the SoftAP, then PAIR_COMPLETE over the building LAN. */
 #include "panel_state.h"
 #include <stdio.h>
@@ -13,7 +13,7 @@
 
 static const char *TAG = "panel_pairing";
 
-#define PAIR_COLLISION_WINDOW_US 1500000LL /* 1.5 s multi-module collision listen (I-30) */
+#define PAIR_COLLISION_WINDOW_US 1500000LL /* 1.5 s multi-module collision listen */
 #define PAIR_SOCKET_RCVTIMEO_MS  50
 
 typedef struct {
@@ -69,7 +69,7 @@ void panel_pairing_abort_locked(bool show_error_led)
 void panel_pairing_start_locked(uint8_t apt_no)
 {
     PANEL_ASSERT_LOCKED();
-    /* Pre-check (I-31): STA must be connected with valid IPv4 lease and apartment slot must be free */
+    /* Pre-check: STA must be connected with valid IPv4 lease and apartment slot must be free */
     uint32_t panel_lan_ip = 0;
     if (g_panel_mode != MODE_IDLE ||
             !doorbell_net_get_sta_ipv4(&panel_lan_ip) ||
@@ -101,7 +101,7 @@ void panel_pairing_start_locked(uint8_t apt_no)
     }
 
     /* Bind pairing listener strictly to the SoftAP: its IPv4 address AND its netif (SO_BINDTODEVICE), since lwIP's
-     * weak host model would otherwise accept datagrams for the SoftAP address arriving from the building LAN (I-27) */
+     * weak host model would otherwise accept datagrams for the SoftAP address arriving from the building LAN */
     int pair_sock = doorbell_udp_socket_create(CONFIG_DOORBELL_UDP_PORT, softap_ip, PAIR_SOCKET_RCVTIMEO_MS);
     if (pair_sock >= 0 && doorbell_net_bind_socket_to_softap(pair_sock) != ESP_OK) {
         close(pair_sock);
@@ -222,7 +222,7 @@ static void receive_on_softap_locked(int64_t now_us)
         return;
     }
     uint32_t from_ip = ntohl(from_addr.sin_addr.s_addr);
-    /* Verify source IP belongs to SoftAP /24 subnet (I-27) */
+    /* Verify source IP belongs to SoftAP /24 subnet */
     if ((from_ip & 0xFFFFFF00UL) != (s_pair_sess.softap_ip_host & 0xFFFFFF00UL)) {
         return;
     }
@@ -239,7 +239,7 @@ static void receive_on_softap_locked(int64_t now_us)
             confirm.apt_no == s_pair_sess.apt_no &&
             memcmp(confirm.unit_mac, s_pair_sess.hello.unit_mac, DOORBELL_MAC_SIZE) == 0 &&
             confirm.confirm_status == DOORBELL_STATUS_OK) {
-        /* Phase 1 complete: close SoftAP immediately and wait for PAIR_COMPLETE on the LAN (I-30) */
+        /* Phase 1 complete: close SoftAP immediately and wait for PAIR_COMPLETE on the LAN */
         close_pair_softap_locked();
         s_pair_sess.window_deadline_us = esp_timer_get_time() +
                                          (int64_t)CONFIG_DOORBELL_PAIRING_COMPLETE_TIMEOUT_S * 1000000LL;
@@ -256,7 +256,7 @@ void panel_pairing_step(void)
 
     if (g_panel_mode == MODE_PAIR_COMPLETE) {
         if (now_us >= s_pair_sess.window_deadline_us) {
-            ESP_LOGW(TAG, "Timed out waiting for PAIR_COMPLETE on LAN for apartment %u — rolling back (I-30)",
+            ESP_LOGW(TAG, "Timed out waiting for PAIR_COMPLETE on LAN for apartment %u — rolling back",
                      (unsigned)s_pair_sess.apt_no);
             panel_pairing_abort_locked(true);
         }
@@ -265,7 +265,7 @@ void panel_pairing_step(void)
             ESP_LOGW(TAG, "Pairing discovery window expired for apartment %u", (unsigned)s_pair_sess.apt_no);
             panel_pairing_abort_locked(true);
         } else if (doorbell_net_get_softap_sta_count() > 1) {
-            /* Multi-station collision check on SoftAP (I-30) */
+            /* Multi-station collision check on SoftAP */
             ESP_LOGW(TAG, "Multiple stations associated to pairing SoftAP — aborting pairing");
             panel_pairing_abort_locked(true);
         } else {
@@ -327,7 +327,7 @@ bool panel_pairing_handle_complete_locked(int lan_sock, const uint8_t *buf, size
     mbedtls_platform_zeroize(&new_rec, sizeof(new_rec));
     slot->persisted_rx_floor = auth_hdr.tx_counter;
 
-    /* Erase any older apartment slot sharing the same unit_mac ONLY after the new commit succeeded (I-30, I-45) */
+    /* Erase any older apartment slot sharing the same unit_mac ONLY after the new commit succeeded */
     for (unsigned old_apt = CONFIG_DOORBELL_PANEL_MIN_APT_NO; old_apt <= CONFIG_DOORBELL_PANEL_MAX_APT_NO; old_apt++) {
         if (old_apt != apt_no && g_apt_slots[old_apt].nvs.registered &&
                 memcmp(g_apt_slots[old_apt].nvs.unit_mac, pc.unit_mac, DOORBELL_MAC_SIZE) == 0) {

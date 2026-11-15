@@ -4,20 +4,21 @@ Version: `1.0` (Protocol Wire Version `0x01`)
 Target Platform: ESP-IDF v6.1 (PSA Crypto API / TF-PSA-Crypto, lwIP POSIX UDP Sockets)
 
 This document is the normative specification for the **DorbellAp** wire protocol, cryptographic framing, deduplication
-rules, keypad grammar, LED priority table, and device state machines. It resolves design review findings `I-4`, `I-7`,
-`I-8`, `I-12`, `I-18`, `I-20`, `I-26`, `I-27`, `I-29`, `I-30`, `I-31`, `I-32`, `I-33`, `I-40`, `I-41`, `I-42`, `I-43`,
-`I-47`, `I-50`, `I-52`, `I-53`, `I-55`, `I-57`, `I-58`, `I-62`, `I-63`, `I-64`, `I-65`, `I-66`, and `I-67`.
+rules, keypad grammar, LED priority table, and device state machines.
 
 ---
 
-## 1. Cryptographic Primitives & ESP-IDF v6.1 PSA API (`I-8`, `I-26`, `I-55`)
+## 1. Cryptographic Primitives & ESP-IDF v6.1 PSA API
 
 In ESP-IDF v6.1 (Mbed TLS 4.1 / TF-PSA-Crypto), legacy `mbedtls_ccm_*` and `mbedtls_ecdh_*` headers are private/removed.
 All cryptographic operations MUST use the standard **PSA Crypto API** (`#include "psa/crypto.h"`):
 
-1. **Initialization & Entropy (`I-26`):**
-   - Call `psa_crypto_init()` at startup **only after** `esp_wifi_start()` has enabled the RF entropy source (or within a
-     `bootloader_random_enable()` / `bootloader_random_disable()` block if RF is not yet started).
+1. **Initialization & Entropy:**
+   - ESP-IDF v6.1 calls `psa_crypto_init()` automatically during startup (`mbedtls/port/esp_psa_crypto_init.c`) and,
+     with `MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG`, every `psa_generate_random()` call reads the hardware RNG directly.
+   - Firmware must NOT call `psa_crypto_init()` directly (only the `linux` host unit test does via
+     `doorbell_crypto_init()`); instead, keep the radio active (`esp_wifi_start()`) whenever X25519 keys, AES keys, or
+     nonces are generated.
    - Never generate X25519 keys, AES keys, or nonces while Wi-Fi/RF is off and hardware RNG is unseeded.
 2. **Pairing Key Agreement (`X25519` + `HKDF-SHA256`):**
    - Key type: `PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_MONTGOMERY)` with 255 bits (`psa_generate_key`).
@@ -34,7 +35,7 @@ All cryptographic operations MUST use the standard **PSA Crypto API** (`#include
 
 ---
 
-## 2. Wire Frame Format & Nonce Construction (`I-8`, `I-53`, `I-62`)
+## 2. Wire Frame Format & Nonce Construction
 
 All operational UDP packets on port `19500` (default) share a fixed **12-byte cleartext header** that is authenticated
 as **Additional Authenticated Data (AAD)**, followed by the AES-128-CCM encrypted payload and a **16-byte authentication
@@ -53,7 +54,7 @@ tag**.
 | `6..7` | `seq_id` | `uint16_t` | 2 B | Transaction sequence ID matching a request to its `ACK` |
 | `8..11` | `tx_counter`| `uint32_t` | 4 B | Sender's strictly monotonic frame counter (`1 .. 0xFFFFFFFE`) |
 
-### 2.2. 13-Byte AES-128-CCM Nonce Construction (`I-8`)
+### 2.2. 13-Byte AES-128-CCM Nonce Construction
 
 To guarantee that the panel and the apartment module never reuse a nonce under the shared key `K_apt` (RFC 3610 §2), the
 13-byte CCM nonce is constructed deterministically from the header fields:
@@ -73,18 +74,18 @@ Byte:   0                  1        2        3..4     5..8        9..12
 - Counter value `0` and `0xFFFFFFFF` are invalid/reserved. If `tx_counter` reaches `0xFFFFFF00`, the device logs a
   critical key-exhaustion warning requiring re-pairing.
 
-### 2.3. Pre-Crypto Filtering & Key Lookup (`I-53`)
+### 2.3. Pre-Crypto Filtering & Key Lookup
 
 Before invoking `psa_aead_decrypt()`, the receiver MUST perform these fast cleartext checks in order:
 1. Verify packet length $\ge 28$ bytes ($12\text{ B header} + 16\text{ B tag}$) and `magic == 0xDB`.
-2. **Destination filter (`I-53`):**
+2. **Destination filter:**
    - On an **Apartment Module (`my_apt_no`):** If `dst_id != my_apt_no`, silently drop the packet
      **without** decrypting and **without** incrementing `rejected_messages`. (This prevents broadcast retries for other
      apartments from polluting `rejected_messages`).
    - On the **Panel (`id == 0`):** Require `dst_id == 0`, `direction == 1`, and `src_id` within configured apartment
      bounds (`1..99`). Look up the registration slot directly by `src_id` in $O(1)$ time. If `src_id` is not registered,
      increment `unregistered_packets` (logged with rate-limiting, separate from `rejected_messages`) and drop.
-3. **Deduplication check (`I-29`):** If `(src_id, tx_counter, seq_id)` matches the cached last-acknowledged request from
+3. **Deduplication check:** If `(src_id, tx_counter, seq_id)` matches the cached last-acknowledged request from
    that peer, immediately re-send the cached `ACK` frame and return without re-executing the command or incrementing
    `rejected_messages`.
 4. **Replay check:** Require `tx_counter > rx_floor[peer]`. If `tx_counter <= rx_floor[peer]`, increment
@@ -93,11 +94,11 @@ Before invoking `psa_aead_decrypt()`, the receiver MUST perform these fast clear
    masked to `0` in AAD so the exact same encrypted frame can be sent over unicast and broadcast). If decryption fails,
    increment `rejected_messages` and drop.
 6. **Commit state:** Only after step 5 succeeds, update `rx_floor[peer] = tx_counter` and update the peer's IPv4 routing
-   table entry if the authenticated payload's `sender_ipv4` matches `recvfrom` source IP (`I-62`).
+   table entry if the authenticated payload's `sender_ipv4` matches `recvfrom` source IP.
 
 ---
 
-## 3. Message Catalogue & Payloads (`I-8`, `I-12`, `I-29`, `I-58`, `I-62`)
+## 3. Message Catalogue & Payloads
 
 All multi-byte integers are network byte order (big-endian). Unknown TLV/trailing bytes in future minor versions MUST
 be ignored for forward compatibility.
@@ -115,21 +116,21 @@ be ignored for forward compatibility.
 | `0x07` | `PAIR_COMPLETE` | Unit → Panel | `sender_ipv4 (4 B)`, `unit_mac (6 B)`, `fw_version_major (1 B)`, `fw_version_minor (1 B)` |
 | `0x08` | `PAIR_COMPLETE_ACK`| Panel → Unit | `req_tx_counter (4 B)`, `req_seq_id (2 B)`, `status (1 B)`, `sender_ipv4 (4 B)`, `panel_boot_id (4 B)` |
 
-- **ACK `status` codes (`I-7`, `I-18`, `I-29`):**
+- **ACK `status` codes:**
   - `0x00` (`STATUS_OK`): Command executed (door relay energized / bell rung / heartbeat recorded).
   - `0x01` (`STATUS_ALREADY_ACTIVE`): Door relay or bell relay is already active (0.5 s pulse in progress); request is
     acknowledged as a valid no-op so the apartment module still shows success (`2 s` full brightness) rather than a
     false timeout.
   - `0x02` (`STATUS_ERROR`): Rejected or invalid state.
-  - `0x03` (`STATUS_CHALLENGE` — `OPEN_DOOR_ACK` only, `I-7`, `I-18`): Returned when `OPEN_DOOR_REQ` carries a stale
+  - `0x03` (`STATUS_CHALLENGE` — `OPEN_DOOR_ACK` only): Returned when `OPEN_DOOR_REQ` carries a stale
     `panel_boot_id` (e.g., after a panel reboot) or `echo_nonce == 0` when freshness verification is required. The panel
     generates a random 64-bit `challenge_nonce` (valid for `2000 ms` for that apartment) and returns it with the current
     `panel_boot_id` without energizing the door relay yet. Upon receiving `STATUS_CHALLENGE`, the apartment module
     immediately and automatically sends a new `OPEN_DOOR_REQ` echoing `(panel_boot_id, challenge_nonce)` within the same
-    button-press transaction (invisible to the user). This guarantees both reboot-replay resistance (`I-7`) and real-time
-    freshness against withheld frames (`I-18`) with zero NVS flash wear.
+    button-press transaction (invisible to the user). This guarantees both reboot-replay resistance and real-time
+    freshness against withheld frames with zero NVS flash wear.
 
-### 3.2. Pairing Messages (On Pairing SoftAP Only — Bound to SoftAP Interface `I-27`)
+### 3.2. Pairing Messages (On Pairing SoftAP Only — Bound to SoftAP Interface)
 
 | `msg_type` | Name | Direction | Security | Payload |
 | :--- | :--- | :--- | :--- | :--- |
@@ -139,32 +140,32 @@ be ignored for forward compatibility.
 
 ---
 
-## 4. Retransmission, Deduplication & Transport Rules (`I-12`, `I-29`, `I-33`, `I-34`, `I-64`)
+## 4. Retransmission, Deduplication & Transport Rules
 
-1. **Confirmable Request/ACK Lifecycle (`I-29`):**
+1. **Confirmable Request/ACK Lifecycle:**
    - Every `RING_REQ`, `OPEN_DOOR_REQ`, `HEARTBEAT_REQ`, and `PAIR_COMPLETE` is a confirmable request with a fresh
      `seq_id` and incremented `tx_counter`.
    - If no matching `*_ACK` (verifying `req_tx_counter == tx_counter` and `req_seq_id == seq_id`) arrives within
      `Application ACK timeout` (`400 ms` default, plus $\pm 25\text{ ms}$ random jitter on retries), the sender
      retransmits the **exact same encrypted payload and `tx_counter`/`seq_id`** (setting `flags.is_retry = 1` in the
      transport byte, which is masked to `0` during AAD computation).
-   - **Dual-Path Retry (`I-33`, `I-34`):**
+   - **Dual-Path Retry:**
      - **Attempt 1 (Initial):** Sent via **unicast** to the peer's last known IPv4 address (or limited broadcast
        `255.255.255.255` if the peer's IP is `0.0.0.0` / unknown).
      - **Attempt 2+ (Retries):** Sent to **both** the last known unicast IPv4 address **and** the limited broadcast
        address (`255.255.255.255`, RFC 1122 §3.2.1.3). Sending both protects against transient unicast loss without
        relying solely on unacknowledged 802.11 broadcast frames, while broadcast recovers from DHCP IP changes or lwIP
-       10-entry ARP cache misses (`I-34`).
-   - **Idempotent Receiver Cache (`I-29`):**
+       10-entry ARP cache misses.
+   - **Idempotent Receiver Cache:**
      - Each receiver stores `last_ack_frame[peer]` (`tx_counter`, `seq_id`, and the serialized `ACK` packet).
      - When a duplicate frame arrives with the same `(src_id, tx_counter, seq_id)`, the receiver re-sends
        `last_ack_frame[peer]` immediately without re-triggering the relay and without counting it as a rejected frame.
      - The receiver sends the `ACK` **before** starting the 500 ms relay pulse so relay coil inrush or timer scheduling
        does not delay the network response.
-2. **Confirmable Heartbeat & Liveness (`I-12`, `I-41`, `I-42`, `I-64`):**
+2. **Confirmable Heartbeat & Liveness:**
    - After boot and initial `IP_EVENT_STA_GOT_IP` (or reconnect), each apartment module starts with its panel
      reachability flag cleared and schedules an **initial probe** `HEARTBEAT_REQ` after a uniform random delay in
-     $[1\text{ s}, 5\text{ s}]$ (`I-64`) to prevent a post-power-outage boot storm while confirming panel reachability
+     $[1\text{ s}, 5\text{ s}]$ to prevent a post-power-outage boot storm while confirming panel reachability
      promptly.
    - While the panel is reachable, subsequent heartbeats fire at `Heartbeat interval` $\pm 10\%$ random jitter. While
      the panel is unreachable, re-probes fire every `15 s` $\pm 10\%$ random jitter (unless `Heartbeat interval` is
@@ -173,34 +174,34 @@ be ignored for forward compatibility.
      `255.255.255.255`).
    - When the Panel replies with an authenticated `HEARTBEAT_ACK` (or `OPEN_DOOR_ACK` / `RING_REQ`), the module updates
      its stored Panel IPv4 address and marks the panel reachable.
-   - **Network / Panel-Unreachable Fail Indication (`I-41`, `I-42`):** Until the module is connected to the Building AP
+   - **Network / Panel-Unreachable Fail Indication:** Until the module is connected to the Building AP
      with IPv4 **and** has received an authenticated response from the Panel — or whenever `STA` disconnects, a
      `HEARTBEAT_REQ` receives no `HEARTBEAT_ACK`, or an `OPEN_DOOR_REQ` times out — its steady-state LED shows `Slow blink
      (1 Hz)` (`LED_UNIT_OUT_OF_COV`) instead of `Dim solid (10%)` (`LED_UNIT_IN_COVERAGE`).
 
 ---
 
-## 5. Device State Machines (`I-30`, `I-31`, `I-40`, `I-43`)
+## 5. Device State Machines
 
-### 5.1. Panel Operating Mode State Machine (`I-43`)
+### 5.1. Panel Operating Mode State Machine
 
 The panel runs a single event-driven coordinator (`esp_event`) with five mutually exclusive modes:
 
 | Mode | Entry Condition | SoftAP State | STA State | Allowed Keypad Inputs |
 | :--- | :--- | :--- | :--- | :--- |
 | `MODE_IDLE` | Normal operation | OFF (`WIFI_MODE_STA`) | Connected / Reconnecting | All visitor rings (`<apt>#`), user code (`*<code>#`), all admin commands (`*<admin>*...#`) |
-| `MODE_PAIR_DISCOVER` | `*<admin>*1*<apt>#` (requires STA connected with IPv4, `I-31`) | ON (`Doorbell-Pair-<MAC4>`, open, `.max_connection=4`, bound to `192.168.4.1` or `10.195.4.1` on subnet conflict `I-32`) | Connected (background scans paused `I-31`) | `*#` cancels pairing; visitor rings (`<apt>#`) and module `OPEN_DOOR_REQ` remain active; other `*` commands return error LED |
+| `MODE_PAIR_DISCOVER` | `*<admin>*1*<apt>#` (requires STA connected with IPv4) | ON (`Doorbell-Pair-<MAC4>`, open, `.max_connection=4`, bound to `192.168.4.1` or `10.195.4.1` on subnet conflict) | Connected (background scans paused) | `*#` cancels pairing; visitor rings (`<apt>#`) and module `OPEN_DOOR_REQ` remain active; other `*` commands return error LED |
 | `MODE_PAIR_COMPLETE` | Single module provisioned (`PAIR_CONFIRM` received); +10 s timer started | OFF (closed immediately when discovery ends) | Connected on LAN | Visitor rings and `OPEN_DOOR_REQ` active; other `*` commands rejected until `PAIR_COMPLETE` or +10 s timeout |
-| `MODE_PORTAL` | `*<admin>*5#` (120 s timer) | ON (`Doorbell-Setup`, `WIFI_AUTH_WPA3_PSK` / SAE, `pmf_cfg.required=true`, passphrase = admin code `I-4`; `httpd` bound strictly to SoftAP netif `I-47`) | Reconnect/scan paused until form submission (`I-40`) | `*#` or hidden reset button closes portal immediately; visitor rings and `OPEN_DOOR_REQ` (if STA remains associated) served; other admin commands rejected |
+| `MODE_PORTAL` | `*<admin>*5#` (120 s timer) | ON (`Doorbell-Setup`, `WIFI_AUTH_WPA3_PSK` / SAE, `pmf_cfg.required=true`, passphrase = admin code; `httpd` bound strictly to SoftAP netif) | Reconnect/scan paused until form submission | `*#` or hidden reset button closes portal immediately; visitor rings and `OPEN_DOOR_REQ` (if STA remains associated) served; other admin commands rejected |
 | `MODE_RESETTING` | Hidden reset button held 10–60 s (factory reset) or `*<admin>*6*<admin>#` (building reset) | Closed before reset | Active | None (commits NVS changes and restarts) |
 
-### 5.2. Two-Phase Pairing Commit & Rollback (`I-30`, `I-45`)
+### 5.2. Two-Phase Pairing Commit & Rollback
 
-1. **Pre-check (`I-31`):** When `* <admin> * 1 * <apt_no> #` is entered, if the panel's `STA` interface does not have a
+1. **Pre-check:** When `* <admin> * 1 * <apt_no> #` is entered, if the panel's `STA` interface does not have a
    valid IPv4 lease (`IP_EVENT_STA_GOT_IP`), or if `apt_no` is already occupied, the panel immediately flashes the 1 s
    error LED and remains in `MODE_IDLE`.
 2. **Discovery & Collision Window (`20 s`):**
-   - Panel opens SoftAP `Doorbell-Pair-<MAC4>` and listens for `PAIR_HELLO` **only** on the SoftAP socket (`I-27`).
+   - Panel opens SoftAP `Doorbell-Pair-<MAC4>` and listens for `PAIR_HELLO` **only** on the SoftAP socket.
    - Upon receiving the first `PAIR_HELLO` from `unit_mac`, the panel starts a **1.5 s collision timer**. If a second
      `PAIR_HELLO` from a different MAC address arrives (or $>1$ station associates to the SoftAP) during the window,
      the panel aborts pairing, closes the SoftAP, and shows the 1 s error LED.
@@ -208,22 +209,22 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    - If only one module is present after 1.5 s, the panel generates `K_apt`, sends `PAIR_CHALLENGE`, and waits for
      `PAIR_CONFIRM`.
    - The new registration `(apt_no, unit_mac, K_apt)` is held as **pending in RAM only** (not yet committed to NVS, and
-     any existing registration with the same `unit_mac` in another apartment slot is **not** deleted yet, `I-30`/`I-45`).
+     any existing registration with the same `unit_mac` in another apartment slot is **not** deleted yet).
 4. **LAN Verification & Atomic NVS Commit (`+10 s` Completion Window):**
    - Upon receiving `PAIR_CONFIRM`, the panel shuts down the SoftAP (`WIFI_MODE_STA`) and waits up to `10 s` (configurable via Kconfig) for `PAIR_COMPLETE` encrypted under `K_apt` on the building LAN socket.
    - When a valid `PAIR_COMPLETE` arrives:
-     1. Panel writes the new apartment record blob to NVS and calls `nvs_commit()` (`I-50`).
+     1. Panel writes the new apartment record blob to NVS and calls `nvs_commit()`.
      2. Only if `nvs_commit()` succeeds, if `unit_mac` was previously registered under a different apartment number
-        `old_apt`, the panel erases `old_apt` from NVS (`I-30`).
+        `old_apt`, the panel erases `old_apt` from NVS.
      3. Panel sends `PAIR_COMPLETE_ACK` (cached for idempotent retries if lost) and turns its LED solid ON for 2 s.
    - The apartment module commits its NVS record and plays the success indication (2 s full brightness + 1 bell pulse)
      **only after** receiving `PAIR_COMPLETE_ACK`. If `PAIR_COMPLETE_ACK` is not received after retries, the module
      rolls back to the unpaired state.
 
-### 5.3. Setup Web Portal Credential Verification & Rollback (`I-40`, `I-47`)
+### 5.3. Setup Web Portal Credential Verification & Rollback
 
 1. The HTTP server (`esp_http_server`) MUST set `httpd_config_t.if_name` (or verify `getsockname()` == SoftAP IP) so it
-   is **unreachable from the building LAN** (`I-47`). Stored passphrases MUST NEVER be echoed in HTML responses.
+   is **unreachable from the building LAN**. Stored passphrases MUST NEVER be echoed in HTML responses.
 2. When the user submits new `ssid` and `password` on the portal form:
    - The panel keeps the SoftAP open and attempts a test association on the `STA` interface with a 15-second timeout.
    - **If `IP_EVENT_STA_GOT_IP` succeeds:** The panel commits the new credentials to NVS, returns an HTTP 200 success
@@ -242,7 +243,7 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    `CONFIG_DOORBELL_WIFI_STA_11B_ONLY` a network without 802.11b rates is shown as incompatible and cannot be selected.
    The form submits `net=<index>&gen=<scan generation>`; the panel takes the SSID bytes from its own cached list and
    rejects a stale generation, an out-of-range index or an incompatible network. `net=m` (or no `net`) uses the typed
-   `ssid` field (hidden networks). All SSIDs are HTML-escaped. No background scanning (`I-31`).
+   `ssid` field (hidden networks). All SSIDs are HTML-escaped. No background scanning.
 5. **Captive portal:** DNS responder on UDP 53 bound to the SoftAP (every `A` query → SoftAP IP, TTL 10 s; other
    types → empty `NOERROR`) and `302` from unknown paths to the form, so phones open the page by themselves.
 6. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or
@@ -250,7 +251,7 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
 
 ---
 
-## 6. Keypad Grammar & Verification Order (`I-20`)
+## 6. Keypad Grammar & Verification Order
 
 ### 6.1. EBNF Grammar
 
@@ -266,7 +267,7 @@ digits         = digit { digit } ;
 digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 ```
 
-### 6.2. Deterministic Evaluation Order (`I-20`)
+### 6.2. Deterministic Evaluation Order
 
 To prevent lockout-bypass oracle attacks:
 1. **Cancel check:** `*#` always clears the input buffer immediately with no error and no lockout change.
@@ -288,7 +289,7 @@ To prevent lockout-bypass oracle attacks:
    - Once an entry matches a valid command template above, compare the entered code against the stored NVS user or admin
      code in constant time (`mbedtls_ct_memcmp`).
    - If the code does not match (including wrong code length on a `* <digits> #` entry), increment `wrong_code_count`
-     (persisted in NVS, `I-52`), trigger lockout if `wrong_code_count >= Wrong codes before lockout`, and show the 1 s
+     (persisted in NVS), trigger lockout if `wrong_code_count >= Wrong codes before lockout`, and show the 1 s
      fast blink error LED.
 5. **Code separation rule:** Setting `user_code == admin_code` (if configured to equal lengths) is rejected as an error.
    Apartment numbers are parsed as unsigned decimal integers without leading zeros (`"0"`, `"01"`, or values outside
@@ -296,12 +297,11 @@ To prevent lockout-bypass oracle attacks:
 
 ---
 
-## 7. LED Priority & Preemption Table (`I-57`, `I-63`, `I-67`)
+## 7. LED Priority & Preemption Table
 
 Implemented using `espressif/led_indicator` priority blink lists. Higher priority (lower numerical index `0 = highest`)
 preempts lower-priority states; when a one-shot pattern finishes, the indicator automatically falls back to the highest
-active steady-state pattern. Dim brightness (`10%`) is defined as the perceived brightness level after gamma correction
-(validated on the hardware bench, `I-67`).
+active steady-state pattern. Dim brightness (`10%`) is defined as the perceived brightness level after gamma correction.
 
 ### 7.1. Panel Status LED Priority Table
 
@@ -315,12 +315,12 @@ active steady-state pattern. Dim brightness (`10%`) is defined as the perceived 
 | `5` | `LED_PANEL_RESET_HOLD` | Solid ON with brief OFF dip (`900 ms` ON / `100 ms` OFF) | Active while hidden factory-reset button held in `10–60 s` window |
 | `6` | `LED_PANEL_TYPING` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while keypad buffer non-empty (`< 10 s` timeout) |
 | `7` | `LED_PANEL_PAIRING` | Repeating double flash (`100 ms` ON, `100 ms` OFF, `100 ms` ON, `700 ms` OFF) | Active during `MODE_PAIR_DISCOVER` / `MODE_PAIR_COMPLETE` |
-| `8` | `LED_PANEL_PORTAL` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while `MODE_PORTAL` is open (`120 s`) after the initial `2 s` solid confirmation (`I-40`) |
+| `8` | `LED_PANEL_PORTAL` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while `MODE_PORTAL` is open (`120 s`) after the initial `2 s` solid confirmation |
 | `9` | `LED_PANEL_LOCKOUT` | Sparse single flash (`100 ms` ON / `2900 ms` OFF, `3000 ms` period) | Steady while keypad lockout timer is active |
-| `10` | `LED_PANEL_NET_LOST` | Sparse single flash (`100 ms` ON / `2900 ms` OFF, `3000 ms` period) | Steady when `STA` is disconnected from Building AP (`I-41`) |
+| `10` | `LED_PANEL_NET_LOST` | Sparse single flash (`100 ms` ON / `2900 ms` OFF, `3000 ms` period) | Steady when `STA` is disconnected from Building AP |
 | `11` (Lowest) | `LED_PANEL_IDLE` | OFF (`0%`) | Default steady state when connected and idle |
 
-### 7.2. Apartment Module Status LED Priority Table & Button Edge Cases (`I-57`, `I-63`)
+### 7.2. Apartment Module Status LED Priority Table & Button Edge Cases
 
 | Priority | State Name | Pattern / Timing | Duration / Exit Condition |
 | :--- | :--- | :--- | :--- |
@@ -332,10 +332,10 @@ active steady-state pattern. Dim brightness (`10%`) is defined as the perceived 
 | `5` | `LED_UNIT_NO_RESPONSE` | Medium blink (`250 ms` ON / `250 ms` OFF, `500 ms` period) | One-shot (`3000 ms`) on `OPEN_DOOR_REQ` timeout |
 | `6` | `LED_UNIT_PAIRING_SEARCH`| Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Active while searching for Panel SoftAP / completing pairing (max `30 s` total timeout) |
 | `7` | `LED_UNIT_UNPAIRED` | Repeating double flash (`100 ms` ON, `100 ms` OFF, `100 ms` ON, `700 ms` OFF) | Steady state when module is unpaired |
-| `8` | `LED_UNIT_OUT_OF_COV` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Steady fail state when paired, until STA has IPv4 and an authenticated panel response (`HEARTBEAT_ACK`, `OPEN_DOOR_ACK`, `RING_REQ`), or after `STA` disconnect, missed `HEARTBEAT_ACK`, or `OPEN_DOOR_REQ` timeout (`I-41`, `I-42`) |
+| `8` | `LED_UNIT_OUT_OF_COV` | Slow blink (`500 ms` ON / `500 ms` OFF, `1 Hz`) | Steady fail state when paired, until STA has IPv4 and an authenticated panel response (`HEARTBEAT_ACK`, `OPEN_DOOR_ACK`, `RING_REQ`), or after `STA` disconnect, missed `HEARTBEAT_ACK`, or `OPEN_DOOR_REQ` timeout |
 | `9` (Lowest) | `LED_UNIT_IN_COVERAGE` | Dim solid (`10%` perceived brightness) | Steady state when paired, connected to Building AP with IPv4, and Panel reachable |
 
-**Apartment Module Button Edge Cases (`I-63`):**
+**Apartment Module Button Edge Cases:**
 - Pressing the **pairing button when already paired**: ignored; releasing in the `7–12 s` window flashes `LED_UNIT_BTN_CANCEL` (triple flash) to remind the user to reset first.
 - Pressing **both pairing and reset buttons simultaneously**: immediately cancels both holds with triple flash.
 - Pressing the **door-open button when unpaired**: immediately shows `LED_UNIT_NO_RESPONSE` (`3 s` medium blink).

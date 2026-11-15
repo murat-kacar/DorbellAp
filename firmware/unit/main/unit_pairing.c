@@ -1,4 +1,4 @@
-/* Two-phase pairing client of the apartment module (I-26, I-27, I-30, I-45): join the panel's open pairing SoftAP,
+/* Two-phase pairing client of the apartment module: join the panel's open pairing SoftAP,
  * PAIR_HELLO / PAIR_CHALLENGE / PAIR_CONFIRM there, then join the building AP and confirm with PAIR_COMPLETE. */
 #include "unit_state.h"
 #include <string.h>
@@ -92,7 +92,7 @@ static bool pair_on_softap(int udp_sock, const uint8_t unit_mac[DOORBELL_MAC_SIZ
     return true;
 }
 
-/* Phase 2 on the building LAN: join, then authenticated PAIR_COMPLETE until PAIR_COMPLETE_ACK (I-30) */
+/* Phase 2 on the building LAN: join, then authenticated PAIR_COMPLETE until PAIR_COMPLETE_ACK */
 static bool pair_complete_on_lan(int udp_sock, const uint8_t unit_mac[DOORBELL_MAC_SIZE], unit_pairing_result_t *res)
 {
     doorbell_provision_blob_t *prov = &res->prov;
@@ -152,7 +152,7 @@ static bool pair_complete_on_lan(int udp_sock, const uint8_t unit_mac[DOORBELL_M
     if (unit_run_txn(pc_frame, pc_frame_len, prov->panel_lan_ipv4, PAIR_COMPLETE_RETRIES, &w, NULL) != ESP_OK ||
             w.status != DOORBELL_STATUS_OK ||
             doorbell_unpack_pair_complete_ack(w.plain, w.plain_len, &ack_pl) != ESP_OK) {
-        ESP_LOGW(TAG, "Did not receive PAIR_COMPLETE_ACK from panel — rolling back (I-30)");
+        ESP_LOGW(TAG, "Did not receive PAIR_COMPLETE_ACK from panel — rolling back");
         return false;
     }
     res->panel_boot_id = ack_pl.panel_boot_id;

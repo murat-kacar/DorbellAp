@@ -41,10 +41,9 @@ ASSERT_BLOB_FRAME(doorbell_panel_factory_wifi_blob_t);
 ASSERT_BLOB_FRAME(doorbell_panel_apt_blob_t);
 ASSERT_BLOB_FRAME(doorbell_unit_state_blob_t);
 
-/* Set when an existing panel_cfg blob could not be validated (CRC/magic/version/size). The panel then runs on in-RAM
- * defaults, and saving would overwrite the stored record - including its unique per-device factory codes (I-5) - with
- * the shared built-in ones. Keep the stored blob intact instead (I-13 spirit); recovery is a full re-flash with the
- * flasher (I-14). */
+/* Set when panel_cfg is missing (unprovisioned NVS) or unreadable (CRC/magic/version/size). Saving is refused so an
+ * unprovisioned panel stays fail-closed and a damaged record (with its unique per-device factory codes) is left intact
+ * until the device is provisioned/re-flashed with the flasher. */
 static bool s_panel_cfg_write_protected = false;
 
 static uint32_t blob_crc(const void *blob, size_t size)
@@ -91,7 +90,7 @@ static esp_err_t blob_load(const char *key, void *blob, size_t size, uint32_t ma
     return err;
 }
 
-/* Stamp magic, version and CRC into @p blob and commit it as one NVS key (atomic per key, I-50) */
+/* Stamp magic, version and CRC into @p blob and commit it as one NVS key (atomic per key) */
 static esp_err_t blob_save(const char *key, void *blob, size_t size, uint32_t magic)
 {
     const uint16_t version = BLOB_VERSION;
@@ -132,7 +131,7 @@ static esp_err_t key_erase(const char *key)
 }
 
 /**
- * RFC 8613 Appendix B.1.1 write-ahead allocation shared by both roles (I-50): a counter above *ceiling is returned only
+ * RFC 8613 Appendix B.1.1 write-ahead allocation shared by both roles: a counter above *ceiling is returned only
  * after a new ceiling (+block) has been committed with @p save. On a failed commit nothing changes.
  */
 static esp_err_t next_tx_counter(uint32_t *ceiling, uint32_t *in_out_runtime_counter, uint32_t block_size,
@@ -168,7 +167,7 @@ static esp_err_t next_tx_counter(uint32_t *ceiling, uint32_t *in_out_runtime_cou
 
 #if CONFIG_NVS_ENCRYPTION
 /* Burn profile (ADR 0015): nvs_flash_init() regenerates the NVS keys on ANY key-partition read error, which would
- * orphan the provisioned (encrypted) NVS - an implicit erase, forbidden by I-13. Keys are generated only for a blank
+ * orphan the provisioned (encrypted) NVS - an implicit erase. Keys are generated only for a blank
  * nvs_keys partition (first boot of an apartment module); a corrupt key partition fails closed. */
 static esp_err_t storage_secure_nvs_init(void)
 {
@@ -191,14 +190,14 @@ static esp_err_t storage_secure_nvs_init(void)
 
 esp_err_t doorbell_storage_init(void)
 {
-    /* Strictly forbid nvs_flash_erase() on boot errors per I-13 */
+    /* Strictly forbid nvs_flash_erase() on boot errors */
 #if CONFIG_NVS_ENCRYPTION
     esp_err_t err = storage_secure_nvs_init();
 #else
     esp_err_t err = nvs_flash_init();
 #endif
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "CRITICAL: NVS flash init failed (%s) — auto-erase is forbidden by I-13",
+        ESP_LOGE(TAG, "CRITICAL: NVS flash init failed (%s) — auto-erase is forbidden",
                  esp_err_to_name(err));
     }
     return err;
@@ -206,41 +205,21 @@ esp_err_t doorbell_storage_init(void)
 
 /* ---- Panel Storage Implementation ---- */
 
-static void copy_str(char *dst, size_t cap, const char *src)
+esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg)
 {
-    strncpy(dst, src ? src : "", cap - 1);
-    dst[cap - 1] = '\0';
-}
-
-esp_err_t doorbell_storage_panel_load_cfg(doorbell_panel_cfg_blob_t *out_cfg,
-                                          const doorbell_panel_cfg_defaults_t *blank_nvs_defaults)
-{
-    if (!out_cfg || !blank_nvs_defaults) {
+    if (!out_cfg) {
         return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t err = blob_load(KEY_PANEL_CFG, out_cfg, sizeof(*out_cfg), PANEL_CFG_MAGIC);
-    if (err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_INVALID_CRC) {
+    if (err == ESP_OK) {
+        s_panel_cfg_write_protected = false;
+        return ESP_OK;
+    }
+    if (err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_INVALID_CRC) {
         s_panel_cfg_write_protected = true;
-        return err;
     }
-    if (err != ESP_ERR_NVS_NOT_FOUND) {
-        return err;
-    }
-
-    /* First boot on blank NVS (out_cfg is zeroized by blob_load) */
-    const doorbell_panel_cfg_defaults_t *d = blank_nvs_defaults;
-    copy_str(out_cfg->wifi_ssid, sizeof(out_cfg->wifi_ssid), d->wifi_ssid);
-    copy_str(out_cfg->wifi_pass, sizeof(out_cfg->wifi_pass), d->wifi_pass);
-    copy_str(out_cfg->admin_code, sizeof(out_cfg->admin_code), d->admin_code);
-    copy_str(out_cfg->user_code, sizeof(out_cfg->user_code), d->user_code);
-    copy_str(out_cfg->factory_admin_code, sizeof(out_cfg->factory_admin_code), d->admin_code);
-    copy_str(out_cfg->factory_user_code, sizeof(out_cfg->factory_user_code), d->user_code);
-    /* Codes are not logged (I-25); this only flags that the shared built-in codes are active (I-5) */
-    ESP_LOGW(TAG, "Blank NVS: initializing panel_cfg with built-in default codes. "
-             "Provision unique per-device codes (flasher 'Flash' with the card's code fields) "
-             "before deployment.");
-    return doorbell_storage_panel_save_cfg(out_cfg);
+    return err;
 }
 
 esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg)
@@ -249,8 +228,8 @@ esp_err_t doorbell_storage_panel_save_cfg(doorbell_panel_cfg_blob_t *cfg)
         return ESP_ERR_INVALID_ARG;
     }
     if (s_panel_cfg_write_protected) {
-        ESP_LOGW(TAG, "panel_cfg save refused: stored record is unreadable and kept intact "
-                 "(re-flash the panel with the flasher)");
+        ESP_LOGW(TAG, "panel_cfg save refused: stored record is missing or unreadable "
+                 "(provision with the flasher)");
         return ESP_ERR_INVALID_STATE;
     }
     return blob_save(KEY_PANEL_CFG, cfg, sizeof(*cfg), PANEL_CFG_MAGIC);

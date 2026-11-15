@@ -206,19 +206,6 @@ class BuildMixin:
             env = self._build_idf_env()
             idf_py = Path(env["IDF_PATH"]) / "tools" / "idf.py"
 
-            apply_specs, apply_values = list(specs), dict(values)
-            if is_panel:
-                # The blank-NVS fallback codes must match the configured lengths (compile-time check in
-                # doorbell_config_checks.h); they are bench-only placeholders, real panels get unique codes from
-                # the card fields on Flash.
-                # Different digit strings so admin and user placeholders never coincide (e.g. both 8 digits).
-                for key, length, digits in (
-                    ("DOORBELL_PANEL_DEFAULT_ADMIN_CODE", values["DOORBELL_PANEL_ADMIN_CODE_LEN"], "1234567890"),
-                    ("DOORBELL_PANEL_DEFAULT_USER_CODE", values["DOORBELL_PANEL_USER_CODE_LEN"], "12340987"),
-                ):
-                    apply_specs.append(ParamSpec(key, key, "", "str", "", ""))
-                    apply_values[key] = digits[: int(length)]
-
             # Canonical ESP-IDF layering (the same way CI builds): each profile directory has one sdkconfig, resolved
             # from firmware/sdkconfig.defaults + the GUI values [+ the Burn overlay]; the other profile's build state
             # is never touched. kconfgen applies defaults only to options missing from an existing sdkconfig, so the
@@ -227,7 +214,7 @@ class BuildMixin:
             build_dir = fw_dir / ("build_burn" if burn else "build")
             build_dir.mkdir(exist_ok=True)
             gui_defaults = build_dir / FLASHER_DEFAULTS_NAME
-            self._write_flasher_defaults(gui_defaults, apply_specs, apply_values)
+            self._write_flasher_defaults(gui_defaults, specs, values)
             sdkconfig = build_dir / "sdkconfig"
             layers = [SDKCONFIG_DEFAULTS_PATH, gui_defaults] + ([BURN_OVERLAY_PATH] if burn else [])
             digest = hashlib.sha256(

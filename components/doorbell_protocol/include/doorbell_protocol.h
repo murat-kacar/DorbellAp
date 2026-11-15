@@ -186,7 +186,7 @@ typedef struct {
     uint8_t confirm_status;
 } doorbell_pair_confirm_t;
 
-/* Deduplication cache entry per peer (I-29) */
+/* Deduplication cache entry per peer */
 typedef struct {
     bool valid;
     uint32_t tx_counter;
@@ -205,6 +205,8 @@ typedef struct {
     uint8_t pub_key[DOORBELL_X25519_PUB_SIZE];
 } doorbell_x25519_ctx_t;
 
+/* ESP-IDF v6.1 calls psa_crypto_init() automatically at startup on ESP32 targets;
+ * doorbell_crypto_init() is used by the `linux` host unit tests. */
 esp_err_t doorbell_crypto_init(void);
 esp_err_t doorbell_crypto_random(uint8_t *buf, size_t len);
 
@@ -260,7 +262,7 @@ esp_err_t doorbell_frame_decrypt(const uint8_t *frame,
                                  size_t *out_plaintext_len);
 
 /**
- * Accepted authenticated frame (I-50, I-62): advance @p rx_floor to @p rx_counter and adopt @p from_ipv4 as the peer
+ * Accepted authenticated frame: advance @p rx_floor to @p rx_counter and adopt @p from_ipv4 as the peer
  * address if the authenticated @p sender_ipv4 matches it.
  * @return true when the record must be persisted now: the peer address changed, or the floor has advanced a whole
  *         write-ahead block since @p persisted_rx_floor
@@ -269,7 +271,7 @@ bool doorbell_rx_accept(uint32_t *rx_floor, uint32_t *peer_ipv4, uint32_t persis
                         uint32_t sender_ipv4, uint32_t from_ipv4, uint32_t block_size);
 
 /**
- * A retransmission of the request whose ACK is cached (I-29): same tx_counter and seq_id and the same CCM tag, so a
+ * A retransmission of the request whose ACK is cached: same tx_counter and seq_id and the same CCM tag, so a
  * forged cleartext header with a guessed (tx_counter, seq_id) never makes the receiver reflect the cached ACK.
  */
 bool doorbell_dedup_match(const doorbell_dedup_cache_t *cache, const doorbell_hdr_t *req_hdr, const uint8_t *req_frame,

@@ -1,7 +1,7 @@
 #pragma once
 
 /* Entrance panel configuration: Kconfig bools as 0/1 constants and compile-time checks of
- * firmware/panel/main/Kconfig.projbuild (I-49, I-66). The shared checks are in doorbell_config_checks.h. */
+ * firmware/panel/main/Kconfig.projbuild. The shared checks are in doorbell_config_checks.h. */
 #include "doorbell_config_checks.h"
 
 #if CONFIG_DOORBELL_PANEL_DOOR_RELAY_ACTIVE_LOW
@@ -32,10 +32,6 @@ static_assert(CONFIG_DOORBELL_PANEL_ADMIN_CODE_LEN >= 8 && CONFIG_DOORBELL_PANEL
               "Admin code length must be between 8 and 10 digits (WPA3-SAE minimum is 8)");
 static_assert(CONFIG_DOORBELL_PANEL_USER_CODE_LEN >= 4 && CONFIG_DOORBELL_PANEL_USER_CODE_LEN <= 8,
               "User code length must be between 4 and 8 digits");
-static_assert(sizeof(CONFIG_DOORBELL_PANEL_DEFAULT_ADMIN_CODE) - 1 == CONFIG_DOORBELL_PANEL_ADMIN_CODE_LEN,
-              "Default admin code must have exactly 'Admin code length' digits, or it can never authenticate");
-static_assert(sizeof(CONFIG_DOORBELL_PANEL_DEFAULT_USER_CODE) - 1 == CONFIG_DOORBELL_PANEL_USER_CODE_LEN,
-              "Default user code must have exactly 'User code length' digits, or it can never authenticate");
 static_assert(CONFIG_DOORBELL_PANEL_LOCKOUT_FIRST_S <= CONFIG_DOORBELL_PANEL_LOCKOUT_MAX_S,
               "First lockout duration must be <= maximum lockout duration");
 static_assert(CONFIG_DOORBELL_PANEL_RESET_MIN_HOLD_S < CONFIG_DOORBELL_PANEL_RESET_MAX_HOLD_S,

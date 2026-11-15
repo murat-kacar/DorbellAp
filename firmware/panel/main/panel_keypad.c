@@ -207,7 +207,7 @@ static void commit_new_code_locked(bool admin, const doorbell_kp_token_t *new_co
 }
 
 /**
- * @brief Evaluate completed '#' sequence in strict deterministic order (docs/protocol.md §6.2, I-20): syntax
+ * @brief Evaluate completed '#' sequence in strict deterministic order (docs/protocol.md §6.2): syntax
  *        (doorbell_keypad_parse), mode check, lockout gate, then constant-time code verification and execution.
  */
 static void evaluate_sequence_locked(const char *seq, size_t len)
@@ -234,8 +234,8 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
     }
 
     /* Mode check: in MODE_PAIR_DISCOVER, MODE_PAIR_COMPLETE, or MODE_PORTAL, '*' commands other than '*#' are rejected.
-     * Step 2: lockout gate — reject '*' commands during lockout without inspecting digits (I-20).
-     * Step 3: a malformed command template is an error without incrementing wrong_code_count (I-20). */
+     * Step 2: lockout gate — reject '*' commands during lockout without inspecting digits.
+     * Step 3: a malformed command template is an error without incrementing wrong_code_count. */
     if (g_panel_mode != MODE_IDLE || panel_is_locked_out() || cmd.kind == DOORBELL_KP_MALFORMED) {
         doorbell_led_start(LED_PANEL_RESULT_ERR);
         return;
@@ -266,7 +266,7 @@ static void evaluate_sequence_locked(const char *seq, size_t len)
         return;
     }
 
-    /* Admin authentication passed: reset lockout counters (I-19) */
+    /* Admin authentication passed: reset lockout counters */
     reset_lockout_on_success_locked();
 
     /* Step 5: command execution */
@@ -418,7 +418,7 @@ static void panel_reset_btn_up_cb(void *button_handle, void *usr_data)
 
 esp_err_t panel_keypad_init(void)
 {
-    /* Restore persisted lockout if power-cycled during active lockout (I-52) */
+    /* Restore persisted lockout if power-cycled during active lockout */
     if (g_panel_cfg.lockout_remaining_s > 0) {
         s_lockout_deadline_us = esp_timer_get_time() + (int64_t)g_panel_cfg.lockout_remaining_s * 1000000LL;
         doorbell_led_start(LED_PANEL_LOCKOUT);

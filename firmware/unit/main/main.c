@@ -53,13 +53,13 @@ static uint16_t s_next_seq_id = 1;
 static uint32_t s_known_panel_boot_id = 0;
 static doorbell_dedup_cache_t s_last_ring_ack = {0};
 
-/* Telemetry counters (I-58), unit_worker_task only */
+/* Telemetry counters, unit_worker_task only */
 static uint16_t s_ring_count = 0;
 static uint16_t s_unacked_open_count = 0;
 static uint16_t s_rejected_count = 0;
 static uint8_t  s_reset_reason = 0;
 
-/* Coverage and heartbeat tracking (I-41, I-42, I-64, I-65) */
+/* Coverage and heartbeat tracking */
 static _Atomic bool s_sta_has_ip = false;
 #if CONFIG_DOORBELL_HEARTBEAT_ENABLED
 static _Atomic bool s_panel_reachable = false;
@@ -131,7 +131,7 @@ static void schedule_next_heartbeat(bool initial_after_boot)
 #if CONFIG_DOORBELL_HEARTBEAT_ENABLED
     int64_t now_us = esp_timer_get_time();
     if (initial_after_boot) {
-        /* Boot / link-up quick probe (I-64): uniform random delay in [1 s, 5 s] */
+        /* Boot / link-up quick probe: uniform random delay in [1 s, 5 s] */
         uint32_t span_ms = HEARTBEAT_INITIAL_MAX_MS - HEARTBEAT_INITIAL_MIN_MS;
         uint32_t delay_ms = HEARTBEAT_INITIAL_MIN_MS + ((span_ms > 0) ? (esp_random() % (span_ms + 1U)) : 0U);
         s_next_heartbeat_us = now_us + (int64_t)delay_ms * 1000LL;
@@ -147,7 +147,7 @@ static void schedule_next_heartbeat(bool initial_after_boot)
     if (!s_panel_reachable && interval_s > HEARTBEAT_UNREACHABLE_S) {
         interval_s = HEARTBEAT_UNREACHABLE_S;
     }
-    /* Periodic interval +/- 10% random jitter (I-64) */
+    /* Periodic interval +/- 10% random jitter */
     int32_t base_ms = (int32_t)(interval_s * 1000U);
     int32_t jitter_span = base_ms / 10;
     int32_t jitter_ms = (jitter_span > 0)
@@ -197,7 +197,7 @@ static void execute_unit_reset(void)
     esp_restart();
 }
 
-/* ---- Confirmable requests to the panel (I-29, I-33) ---- */
+/* ---- Confirmable requests to the panel ---- */
 
 static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host);
 
@@ -243,7 +243,7 @@ esp_err_t unit_run_txn(uint8_t *frame, size_t frame_len, uint32_t peer_ip, uint3
     return doorbell_txn_run(&txn, out_rtt_ms);
 }
 
-/* One request of a paired module: counter (write-ahead, I-50), seq_id, key and panel address taken under the lock */
+/* One request of a paired module: counter (write-ahead), seq_id, key and panel address taken under the lock */
 typedef struct {
     uint32_t tx_counter;
     uint32_t rx_floor;
@@ -277,7 +277,7 @@ static esp_err_t unit_request_encrypt(const unit_request_t *req, uint8_t msg_typ
     return doorbell_frame_encrypt(&hdr, req->k_apt, plain, plain_len, frame, DOORBELL_MAX_FRAME_SIZE, frame_len);
 }
 
-/* Accepted ACK from the panel: replay floor, authenticated panel IP (persisted in write-ahead blocks, I-50, I-62) and
+/* Accepted ACK from the panel: replay floor, authenticated panel IP (persisted in write-ahead blocks) and
  * the panel's boot id */
 static void unit_accept_panel_ack(const unit_ack_wait_t *w, uint32_t sender_ipv4, uint32_t panel_boot_id)
 {
@@ -293,7 +293,7 @@ static void unit_accept_panel_ack(const unit_ack_wait_t *w, uint32_t sender_ipv4
     s_panel_reachable = true;
 }
 
-/* ---- Two-phase pairing: run the client (unit_pairing.c), then commit (I-30, I-50) ---- */
+/* ---- Two-phase pairing: run the client (unit_pairing.c), then commit ---- */
 
 /* Persist the pairing state, adopting it in RAM only after NVS confirms */
 static esp_err_t commit_pairing(const unit_pairing_result_t *res)
@@ -377,14 +377,14 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
     }
 
     unit_lock();
-    /* Step 2: Pre-crypto destination filter (I-53) — ignore frames for other apartments without counting */
+    /* Step 2: Pre-crypto destination filter — ignore frames for other apartments without counting */
     if (!g_unit_paired || clear_hdr.dst_id != s_unit_state.apt_no || clear_hdr.src_id != DOORBELL_ID_PANEL ||
             (clear_hdr.flags & DOORBELL_FLAG_DIR_UNIT_TO_PANEL) != 0) {
         unit_unlock();
         return;
     }
 
-    /* Step 3: Deduplication check (I-29) — re-send cached ACK on duplicate RING_REQ */
+    /* Step 3: Deduplication check — re-send cached ACK on duplicate RING_REQ */
     if (clear_hdr.msg_type == DOORBELL_MSG_RING_REQ && doorbell_dedup_match(&s_last_ring_ack, &clear_hdr, buf, len)) {
         doorbell_udp_send_direct(udp_sock, s_last_ring_ack.frame, s_last_ring_ack.frame_len, from_ip_host,
                                  CONFIG_DOORBELL_UDP_PORT);
@@ -412,7 +412,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
         return;
     }
 
-    /* Step 6: Commit state & authenticated IP update (I-62). The replay floor is persisted on EVERY accepted RING
+    /* Step 6: Commit state & authenticated IP update. The replay floor is persisted on EVERY accepted RING
      * (rings are rare, so flash wear is negligible); otherwise after a module reboot the floor could lag by up to one
      * counter block and a recorded RING_REQ could be replayed to ring the bell again. */
     doorbell_rx_accept(&s_unit_state.rx_floor, &s_unit_state.panel_ipv4, s_persisted_rx_floor, auth_hdr.tx_counter,
@@ -462,7 +462,7 @@ static void handle_incoming_frame(int udp_sock, const uint8_t *buf, size_t len, 
     update_steady_led();
 }
 
-/* ---- OPEN_DOOR with the reboot-replay challenge (I-7, I-18) ---- */
+/* ---- OPEN_DOOR with the reboot-replay challenge ---- */
 
 static void execute_open_door_transaction(int udp_sock)
 {
@@ -547,7 +547,7 @@ static void execute_open_door_transaction(int udp_sock)
     }
 }
 
-/* ---- Confirmable heartbeat (I-12, I-41, I-42, I-58) ---- */
+/* ---- Confirmable heartbeat ---- */
 
 #if CONFIG_DOORBELL_HEARTBEAT_ENABLED
 static void execute_heartbeat_transaction(int udp_sock)
@@ -619,7 +619,7 @@ static void execute_heartbeat_transaction(int udp_sock)
 static void unit_worker_task(void *arg)
 {
     (void)arg;
-    /* Subscribe worker task to Task Watchdog (I-46) */
+    /* Subscribe worker task to Task Watchdog */
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     int udp_sock = doorbell_udp_socket_create(CONFIG_DOORBELL_UDP_PORT, 0, UDP_SOCKET_RCVTIMEO_MS);
@@ -667,7 +667,7 @@ void app_main(void)
     s_state_mutex = xSemaphoreCreateMutex();
     configASSERT(s_state_mutex != NULL);
 
-    /* 1. Boot-safe Bell Relay initialization BEFORE any other peripheral (I-22) */
+    /* 1. Boot-safe Bell Relay initialization BEFORE any other peripheral */
     ESP_ERROR_CHECK(doorbell_relay_init(&s_bell_relay,
                                         CONFIG_DOORBELL_UNIT_GPIO_BELL_RELAY,
                                         DOORBELL_UNIT_BELL_RELAY_ACTIVE_HIGH,
@@ -690,9 +690,9 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(doorbell_led_init(CONFIG_DOORBELL_UNIT_GPIO_STATUS_LED, led_table, LED_UNIT_MAX, -1));
 
-    /* 3. NVS storage initialization (strictly no auto-erase on error per I-13) */
+    /* 3. NVS storage initialization (strictly no auto-erase on error) */
     if (doorbell_storage_init() != ESP_OK) {
-        /* Storage fault: never erase (I-13). Keep a persistent error indication instead of a one-shot pattern. */
+        /* Storage fault: never erase. Keep a persistent error indication instead of a one-shot pattern. */
         for (;;) {
             doorbell_led_start(LED_UNIT_BTN_CANCEL);
             vTaskDelay(pdMS_TO_TICKS(3000));
@@ -700,7 +700,7 @@ void app_main(void)
     }
 
     if (doorbell_storage_unit_load(&s_unit_state) == ESP_OK && s_unit_state.paired) {
-        /* Resume monotonic counter from reserved ceiling (I-50) */
+        /* Resume monotonic counter from reserved ceiling */
         s_runtime_tx_counter = s_unit_state.tx_counter_ceiling;
         s_persisted_rx_floor = s_unit_state.rx_floor;
         g_unit_paired = true;
@@ -712,7 +712,7 @@ void app_main(void)
                  doorbell_reset_reason_str(s_reset_reason));
     }
 
-    /* 4. Network initialization (I-38); starting the radio also enables RF RNG entropy (I-26) */
+    /* 4. Network initialization; starting the radio also enables RF RNG entropy */
     ESP_ERROR_CHECK(doorbell_net_init(UNPAIRED_HOSTNAME, &on_net_state_changed, NULL));
     if (g_unit_paired) {
         unit_set_apartment_hostname(s_unit_state.apt_no);
@@ -727,7 +727,7 @@ void app_main(void)
     /* 5. Buttons initialization */
     ESP_ERROR_CHECK(unit_buttons_init());
 
-    /* 6. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT (I-46) */
+    /* 6. Register esp_timer and FreeRTOS timer pipeline health handles with TWDT */
     ESP_ERROR_CHECK(doorbell_twdt_register_timer_pipelines("unit_esp_timer", "unit_rtos_timer"));
 
     /* 7. Start TWDT-monitored UDP worker task */

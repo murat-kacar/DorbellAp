@@ -39,7 +39,7 @@ typedef enum {
 } panel_led_state_t;
 
 /**
- * @brief Panel mutually exclusive operating modes (docs/protocol.md §5.1, I-43).
+ * @brief Panel mutually exclusive operating modes (docs/protocol.md §5.1).
  */
 typedef enum {
     MODE_IDLE = 0,
@@ -98,9 +98,9 @@ void panel_action_building_reset(void);
 void panel_action_factory_reset(void);
 
 /* Module frame helpers shared by main.c and panel_pairing.c; the caller holds g_panel_mutex */
-/** An authenticated frame arrived from @p slot's module: liveness, silence-restart backoff reset (I-52) */
+/** An authenticated frame arrived from @p slot's module: liveness, silence-restart backoff reset */
 void panel_note_module_rx_locked(panel_apt_slot_t *slot, int64_t now_us);
-/** Encrypt the ACK for @p req_hdr into the slot's deduplication cache (I-29) and send it */
+/** Encrypt the ACK for @p req_hdr into the slot's deduplication cache and send it */
 void panel_send_ack_locked(int lan_sock, panel_apt_slot_t *slot, uint8_t ack_msg_type, const doorbell_hdr_t *req_hdr,
                            const uint8_t *req_frame, size_t req_len, uint32_t ack_counter, const uint8_t *ack_plain,
                            size_t ack_plain_len, uint32_t to_ip_host);
@@ -110,7 +110,7 @@ void panel_pairing_start_locked(uint8_t apt_no);
 void panel_pairing_abort_locked(bool show_error_led);
 /** One step of the pairing state machine (worker task, takes g_panel_mutex; waits at most the SoftAP rcv timeout) */
 void panel_pairing_step(void);
-/** PAIR_COMPLETE of the running session (I-30, I-45); @return false if @p clear_hdr is not that frame */
+/** PAIR_COMPLETE of the running session; @return false if @p clear_hdr is not that frame */
 bool panel_pairing_handle_complete_locked(int lan_sock, const uint8_t *buf, size_t len, uint32_t from_ip_host,
                                           const doorbell_hdr_t *clear_hdr);
 
