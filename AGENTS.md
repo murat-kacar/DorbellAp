@@ -186,11 +186,11 @@ Normative companion specifications:
 
 - **Preconditions & User Flow:** The panel must be in `MODE_IDLE` and connected to the building AP with a valid
   IPv4 lease (`IP_EVENT_STA_GOT_IP`); otherwise `* <admin_code> * 1 * <apt_no> #` immediately returns the 1 s error LED.
-  When valid, the panel opens a 20 s discovery window (repeating double flash). On the apartment module (next to the
+  When valid, the panel opens a 30 s discovery window (repeating double flash). On the apartment module (next to the
   panel), the hidden pairing button is held for **7–12 s** and released (holding $\ge 15\text{ s}$ cancels with a triple
   flash).
 - **Temporary Pairing Network:**
-  - During the 20 s discovery window, the panel switches to `WIFI_MODE_APSTA` and opens an **open (unencrypted)**
+  - During the 30 s discovery window, the panel switches to `WIFI_MODE_APSTA` and opens an **open (unencrypted)**
     pairing SoftAP named `Doorbell-Pair-<MAC4>` on the same channel as its `STA` interface, with `.max_connection = 4`
     and background `STA` scans paused.
   - The pairing UDP listener is bound strictly to the SoftAP interface and accepts `PAIR_HELLO` only from
@@ -206,7 +206,7 @@ Normative companion specifications:
     radio must be running whenever keys or nonces are generated, not a particular init order; the firmware does not
     call `psa_crypto_init()` (only the `linux` host test does).
 - **Two-Phase Commit & Timing:**
-  - The 20-second timer governs the **module discovery window**. Once a single module completes `PAIR_CONFIRM` on the
+  - The 30-second timer governs the **module discovery window**. Once a single module completes `PAIR_CONFIRM` on the
     SoftAP, the panel closes the SoftAP immediately, holds the registration as **pending in RAM only**, and starts a
     `+10 s` completion timer (Kconfig configurable) for the module to join the building AP, obtain DHCP, and send
     authenticated `PAIR_COMPLETE` over the building LAN.
@@ -319,7 +319,7 @@ Finalized product-level and security-scope architecture decisions:
 2. **Zero-Code Button Pairing Flow (Accepted Operational Scope):**
    - The manual's zero-code pairing workflow (`* <admin_code> * 1 * <apt_no> #` + physical button hold on the module at
      the panel + `X25519` + `HKDF-SHA256` + 1.5 s multi-module collision abort) is retained to keep manufacturing and
-     field installation simple. The 20-second unauthenticated discovery window is recorded as an accepted operational
+     field installation simple. The 30-second unauthenticated discovery window is recorded as an accepted operational
      risk mitigated by physical installer presence and the collision check.
 3. **`OPEN_DOOR` Reboot Replay & Freshness Protection (`panel_boot_id` + Challenge Nonce):**
    - The panel generates a random 32-bit `panel_boot_id` at every boot. If an `OPEN_DOOR_REQ` arrives with a stale

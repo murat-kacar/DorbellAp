@@ -210,7 +210,7 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
 1. **Pre-check:** When `* <admin> * 1 * <apt_no> #` is entered, if the panel's `STA` interface does not have a
    valid IPv4 lease (`IP_EVENT_STA_GOT_IP`), or if `apt_no` is already occupied, the panel immediately flashes the 1 s
    error LED and remains in `MODE_IDLE`.
-2. **Discovery & Collision Window (`20 s`):**
+2. **Discovery & Collision Window (`30 s`):**
    - Panel opens SoftAP `Doorbell-Pair-<MAC4>` and listens for `PAIR_HELLO` **only** on the SoftAP socket.
    - Upon receiving the first `PAIR_HELLO` from `unit_mac`, the panel starts a **1.5 s collision timer**. If a second
      `PAIR_HELLO` from a different MAC address arrives (or $>1$ station associates to the SoftAP) during the window,

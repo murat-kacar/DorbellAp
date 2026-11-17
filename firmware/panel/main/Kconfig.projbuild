@@ -166,7 +166,7 @@ menu "Doorbell panel"
         config DOORBELL_PAIRING_WINDOW_S
             int "Pairing window (s)"
             range 10 120
-            default 20
+            default 30
             help
                 Duration in seconds of the panel's temporary SoftAP module discovery window.
 

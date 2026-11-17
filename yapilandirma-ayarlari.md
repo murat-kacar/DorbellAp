@@ -153,7 +153,7 @@ seviyeyi sıfırlar.
 
 | Ayar | Varsayılan | Ne işe yarar |
 | :--- | :--- | :--- |
-| Pairing window | 20 s | Panelin eşleşmemiş modülü yakalama (keşif) penceresi süresi. |
+| Pairing window | 30 s | Panelin eşleşmemiş modülü yakalama (keşif) penceresi süresi. |
 | RING retries without ACK | 2 | Cevap gelmezse zilin kaç kez daha gönderileceği. 2 ise toplam 3 gönderim yapılır. |
 | Restart the panel when no module reports | Açık | En az bir daire kayıtlıyken hiçbir modülden 3 heartbeat aralığı boyunca rapor gelmezse panel kendini yeniden başlatır. Heartbeat kapalıysa bu ayar görünmez. |
 

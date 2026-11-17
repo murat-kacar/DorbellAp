@@ -71,7 +71,7 @@ Eşleştirme işlemi modüller dairelere monte edilmeden önce **panelin yanınd
    * <yönetici> * 1 * <daire no> #
    ```
 
-   - **Beklenen LED (Panel):** **Tekrarlayan çift flaş** (20 saniyelik keşif penceresi açılır; iptal için `* #`).
+   - **Beklenen LED (Panel):** **Tekrarlayan çift flaş** (30 saniyelik keşif penceresi açılır; iptal için `* #`).
 2. **Daire Modülünde** gizli **eşleştirme butonunu** basılı tutun:
    - **Tutma penceresi (7–12 s):** 7\. saniyede modül LED'i **orta hızda yanıp sönmeye** başladığında **butonu bırakın**.
    - **Zaman aşımı (> 12 s):** 12 saniyeden uzun basılırsa LED söner ve bırakmak işlemi tetiklemez; 15\. saniyede **üçlü flaş** ile işlem iptal edilir.
@@ -161,7 +161,7 @@ Komutlar, panelde eşleştirme penceresi veya kurulum portalı açık değilken 
 
 | İşlem | Komut | Başarı LED'i |
 | :--- | :--- | :--- |
-| Daire eşleştirme (20 s pencere) | `* <yönetici> * 1 * <daire no> #` | Tekrarlayan çift flaş → **2 s sabit** |
+| Daire eşleştirme (30 s pencere) | `* <yönetici> * 1 * <daire no> #` | Tekrarlayan çift flaş → **2 s sabit** |
 | Daire kaydını silme | `* <yönetici> * 2 * <daire no> * <daire no> #` | **2 s sabit** |
 | Kullanıcı şifresi değiştirme | `* <yönetici> * 3 * <yeni 4 hane> * <yeni 4 hane> #` | **2 s sabit** |
 | Yönetici şifresi değiştirme | `* <yönetici> * 4 * <yeni 8 hane> * <yeni 8 hane> #` | **2 s sabit** |
@@ -281,7 +281,7 @@ Birden fazla durum aynı anda oluşursa aşağıdaki tablolarda **üst sırada y
 | 5 | **3 saniye orta hızda yanıp söner** | Daire kayıtlı ancak modül cevap vermedi |
 | 6 | **Sabit, arada kısa sönme (900/100 ms)** | Gizli fabrika sıfırlama butonu geçerli aralıkta (10–60 s): şimdi bırakın |
 | 7 | **Yavaş yanıp sönme (1 Hz)** | Tuş takımında komut/numara yazılıyor |
-| 8 | **Tekrarlayan çift flaş** | 20 saniyelik daire eşleştirme penceresi açık |
+| 8 | **Tekrarlayan çift flaş** | 30 saniyelik daire eşleştirme penceresi açık |
 | 9 | **Yavaş yanıp sönme (1 Hz)** | `Doorbell-Setup` Wi-Fi kurulum portalı açık (2 dakika) |
 | 10 | **Seyrek tek flaş (3 s arayla)** | Yanlış şifre kilidi aktif (`*` komutları kilitli) |
 | 11 | **Seyrek tek flaş (3 s arayla)** | Panel bina Wi-Fi ağına bağlı değil |
