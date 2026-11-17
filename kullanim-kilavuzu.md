@@ -48,7 +48,7 @@ Panel üzerinde bina Wi-Fi bilgileri flaşlama aşamasında yüklenmemişse ciha
 3. Telefon veya bilgisayarla `Doorbell-Setup` ağına bağlanın. Wi-Fi parolası o anki `<yönetici>` şifresidir.
    - Çoğu telefonda kurulum sayfası otomatik açılır. Açılmazsa tarayıcıda `http://192.168.4.1` adresine gidin (bina ağı zaten `192.168.4.x` bloğundaysa `http://10.195.4.1` açılır).
    - Telefon sayfa açmıyorsa mobil veriyi kapatın ve "Bu ağda internet yok" uyarısında **Bağlı kal**'ı seçin.
-4. Kurulum sayfasında listelenen ağlardan bina AP adını seçin (gizli ağ için **Diğer / gizli ağ** kullanın), bina Wi-Fi parolasını girin ve kaydedin.
+4. Kurulum sayfasında listelenen ağlardan bina AP adını seçin (gizli ağ için **Diğer / gizli ağ** kullanın), bina Wi-Fi parolasını girin ve **Bağlan**'a dokunun. Ağ listesi sayfa her açıldığında kendiliğinden güncellenir; ağınız görünmüyorsa **Tara**'ya dokunun. Sayfanın üstünde kurulum ağının kapanmasına kalan süre görünür.
    - **Beklenen Sonuç:** Bağlantı başarılı olduğunda panel LED'i **2 saniye sabit** yanar, `Doorbell-Setup` ağı kapanır ve panel beklemede **sönük** duruma geçer.
    - **Hata Durumu:** Parola hatalıysa veya AP'ye ulaşılamazsa panel LED'i **1 saniye hızlı yanıp söner** ve eski ayarlar korunur. (`Doorbell-Setup` ağına yeniden bağlanıp tekrar deneyin; kanal değişimi nedeniyle telefonda sonuç sayfası düşerse panel LED'ine bakın.)
 5. **Fabrika Şifrelerini Değiştirin:** Panel ağa bağlandıktan (`LED sönük`) sonra etiket üzerindeki fabrika yönetici ve kullanıcı şifrelerini değiştirin (bkz. Bölüm 3.2).

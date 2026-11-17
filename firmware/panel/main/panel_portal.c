@@ -121,25 +121,53 @@ static bool extract_form_field(const char *body, const char *key, char *out, siz
     return true;
 }
 
-static void html_escape(const char *src, char *dst, size_t dst_cap)
+/* The page itself (firmware/panel/main/portal_index.html, EMBED_TXTFILES: NUL-terminated) is static; the network list
+ * comes from GET /networks, so the browser refreshes it without reloading the page. */
+extern const char portal_index_html_start[] asm("_binary_portal_index_html_start");
+extern const char portal_index_html_end[] asm("_binary_portal_index_html_end");
+
+/* Length (2..4) of the well-formed UTF-8 multi-byte sequence starting at @p p, or 1 if it does not start one */
+static size_t utf8_seq_len(const uint8_t *p)
 {
+    uint8_t c = p[0];
+    if (c >= 0xC2 && c <= 0xDF) {
+        return (p[1] >= 0x80 && p[1] <= 0xBF) ? 2 : 1;
+    }
+    if (c >= 0xE0 && c <= 0xEF) {
+        uint8_t lo = (c == 0xE0) ? 0xA0 : 0x80;
+        uint8_t hi = (c == 0xED) ? 0x9F : 0xBF;
+        return (p[1] >= lo && p[1] <= hi && p[2] >= 0x80 && p[2] <= 0xBF) ? 3 : 1;
+    }
+    if (c >= 0xF0 && c <= 0xF4) {
+        uint8_t lo = (c == 0xF0) ? 0x90 : 0x80;
+        uint8_t hi = (c == 0xF4) ? 0x8F : 0xBF;
+        return (p[1] >= lo && p[1] <= hi && p[2] >= 0x80 && p[2] <= 0xBF && p[3] >= 0x80 && p[3] <= 0xBF) ? 4 : 1;
+    }
+    return 1;
+}
+
+/* JSON string body for an SSID (any bytes): well-formed UTF-8 passes through, every other byte becomes \u00XX so the
+ * browser always receives valid JSON; HTML-special characters are escaped too. @p dst_cap >= 6 * 32 + 1. */
+static void json_escape(const char *src, char *dst, size_t dst_cap)
+{
+    const uint8_t *s = (const uint8_t *)src;
     size_t di = 0;
-    for (size_t si = 0; src[si] != '\0' && di + 6 < dst_cap; si++) {
-        char c = src[si];
-        if (c == '&') {
-            memcpy(&dst[di], "&amp;", 5);
-            di += 5;
-        } else if (c == '<') {
-            memcpy(&dst[di], "&lt;", 4);
-            di += 4;
-        } else if (c == '>') {
-            memcpy(&dst[di], "&gt;", 4);
-            di += 4;
-        } else if (c == '"') {
-            memcpy(&dst[di], "&quot;", 6);
-            di += 6;
+    for (size_t si = 0; s[si] != '\0' && di + 7 <= dst_cap;) {
+        size_t seq = utf8_seq_len(&s[si]);
+        if (seq > 1) {
+            memcpy(&dst[di], &s[si], seq);
+            di += seq;
+            si += seq;
+            continue;
+        }
+        uint8_t c = s[si++];
+        if (c == '"' || c == '\\') {
+            dst[di++] = '\\';
+            dst[di++] = (char)c;
+        } else if (c < 0x20 || c >= 0x7F || c == '<' || c == '>' || c == '&') {
+            di += (size_t)snprintf(&dst[di], 7, "\\u%04x", (unsigned)c);
         } else {
-            dst[di++] = c;
+            dst[di++] = (char)c;
         }
     }
     dst[di] = '\0';
@@ -148,6 +176,19 @@ static void html_escape(const char *src, char *dst, size_t dst_cap)
 static esp_err_t portal_get_root_handler(httpd_req_t *req)
 {
     /* Strict interface binding check: reject requests from building LAN */
+    if (!is_request_on_softap_interface(req)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, portal_index_html_start, portal_index_html_end - portal_index_html_start - 1);
+}
+
+/* Network list for the page: {"scanning":b,"gen":n,"ttl":s,"current":"ssid","nets":[{"s":"ssid","r":dBm,"l":0|1}]}.
+ * The index in "nets" is what the form submits as net=<index> together with gen. Never contains the passphrase. */
+static esp_err_t portal_get_networks_handler(httpd_req_t *req)
+{
     if (!is_request_on_softap_interface(req)) {
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
         return ESP_FAIL;
@@ -164,87 +205,30 @@ static esp_err_t portal_get_root_handler(httpd_req_t *req)
     uint32_t gen = 0;
     bool scanning = false;
     size_t count = doorbell_net_get_scan_results(nets, DOORBELL_NET_SCAN_MAX, &gen, &scanning);
-
-    /* Preselect the configured network if it is in the list, otherwise the strongest one */
-    int selected = -1;
-    for (size_t i = 0; i < count && selected < 0; i++) {
-        if (current_ssid[0] != '\0' && strcmp(nets[i].ssid, current_ssid) == 0) {
-            selected = (int)i;
-        }
-    }
-    if (selected < 0 && count > 0) {
-        selected = 0;
-    }
+    int64_t left_us = s_portal_deadline_us - esp_timer_get_time();
+    unsigned ttl_s = (left_us > 0) ? (unsigned)(left_us / 1000000LL) : 0U;
 
     char esc[200]; /* 32-byte SSID, every byte escaped to at most 6 characters */
-    char row[512]; /* list row: ~170 bytes of markup + escaped SSID */
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    char row[288];
+    httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    snprintf(row, sizeof(row),
-             "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">%s"
-             "<title>Zil Paneli Wi-Fi Kurulumu</title>",
-             scanning ? "<meta http-equiv=\"refresh\" content=\"3\">" : "");
+    json_escape(current_ssid, esc, sizeof(esc));
+    snprintf(row, sizeof(row), "{\"scanning\":%s,\"gen\":%lu,\"ttl\":%u,\"current\":\"%s\",\"nets\":[",
+             scanning ? "true" : "false", (unsigned long)gen, ttl_s, esc);
     httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
-    httpd_resp_send_chunk(req,
-                          "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px;}"
-                          "label{display:block;margin-top:14px;font-weight:bold;}"
-                          "input{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}"
-                          "label.n{font-weight:normal;margin-top:6px;padding:6px 0;border-bottom:1px solid #ddd;}"
-                          "label.n input{width:auto;margin:0 8px 0 0;}"
-                          "small{color:#666;}"
-                          "button{margin-top:18px;width:100%;padding:10px;font-size:16px;}</style></head>"
-                          "<body><h2>Zil Paneli Bina Wi-Fi Ayarları</h2>"
-                          "<form method=\"POST\" action=\"/save\">", HTTPD_RESP_USE_STRLEN);
-    snprintf(row, sizeof(row),
-             "<input type=\"hidden\" name=\"gen\" value=\"%lu\"><label>Bina Wi-Fi ağını seçin:</label>",
-             (unsigned long)gen);
-    httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
-
-    if (count == 0) {
-        httpd_resp_send_chunk(req, scanning ? "<p>Ağlar taranıyor, lütfen bekleyin…</p>"
-                              : "<p>Ağ bulunamadı. Yeniden tarayın veya adı aşağıya yazın.</p>",
-                              HTTPD_RESP_USE_STRLEN);
-    }
     for (size_t i = 0; i < count; i++) {
-        html_escape(nets[i].ssid, esc, sizeof(esc));
-        const char *bars = nets[i].rssi >= -60 ? "▂▄▆█"
-                           : nets[i].rssi >= -70 ? "▂▄▆"
-                           : nets[i].rssi >= -80 ? "▂▄"
-                           : "▂";
-        snprintf(row, sizeof(row),
-                 "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"%u\"%s>%s "
-                 "<small>%s %d dBm%s</small></label>",
-                 (unsigned)i, ((int)i == selected) ? " checked" : "", esc, bars, (int)nets[i].rssi,
-                 nets[i].secured ? " &#128274;" : " (açık)");
+        json_escape(nets[i].ssid, esc, sizeof(esc));
+        snprintf(row, sizeof(row), "%s{\"s\":\"%s\",\"r\":%d,\"l\":%d}", (i > 0) ? "," : "", esc,
+                 (int)nets[i].rssi, nets[i].secured ? 1 : 0);
         httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
     }
-
-    /* Manual entry for hidden SSIDs; prefilled with the configured name if it is not in the list */
-    bool current_listed = (selected >= 0 && strcmp(nets[selected].ssid, current_ssid) == 0);
-    html_escape(current_listed ? "" : current_ssid, esc, sizeof(esc));
-    snprintf(row, sizeof(row),
-             "<label class=\"n\"><input type=\"radio\" name=\"net\" value=\"m\"%s>Diğer / gizli ağ (adı elle yazın):"
-             "</label><input type=\"text\" name=\"ssid\" maxlength=\"32\" value=\"%s\">",
-             selected < 0 ? " checked" : "", esc);
-    httpd_resp_send_chunk(req, row, HTTPD_RESP_USE_STRLEN);
-
-    /* Never echo the stored passphrase */
-    httpd_resp_send_chunk(req,
-                          "<label>Bina Wi-Fi şifresi (WPA2/WPA3):</label>"
-                          "<input type=\"password\" name=\"password\" maxlength=\"63\" "
-                          "placeholder=\"Şifreyi girin (açık ağda boş)\">"
-                          "<button type=\"submit\">Kaydet ve Bağlan</button></form>"
-                          "<p><a href=\"/scan\">Ağları yeniden tara</a></p>"
-                          "<p>Not: Panel farklı kanaldaki bir ağa bağlanırken bu kurulum ağı kısa süre kopabilir. "
-                          "Sonucu panel LED'inden takip edin: 2 sn sabit = başarılı, "
-                          "1 sn hızlı yanıp sönme = başarısız.</p>"
-                          "</body></html>", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, "]}", HTTPD_RESP_USE_STRLEN);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-/* "Ağları yeniden tara": start a new asynchronous scan (not while a credential test owns the station) */
-static esp_err_t portal_get_scan_handler(httpd_req_t *req)
+/* Page load and the refresh button start a new asynchronous scan (one at a time; not while a credential test owns
+ * the station). The page then polls GET /networks until the scan has finished. */
+static esp_err_t portal_post_scan_handler(httpd_req_t *req)
 {
     if (!is_request_on_softap_interface(req)) {
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
@@ -253,9 +237,26 @@ static esp_err_t portal_get_scan_handler(httpd_req_t *req)
     if (!s_portal_testing) {
         doorbell_net_scan_start_async();
     }
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_set_status(req, "204 No Content");
     return httpd_resp_send(req, NULL, 0);
+}
+
+/* Result of POST /save. The page's script uses the HTTP status (200 saved, 400 invalid input, 409 stale network list,
+ * 502 test association failed, 500 storage error); the short HTML body serves the no-script fallback form. */
+static esp_err_t portal_send_save_result(httpd_req_t *req, const char *status, const char *title, const char *text,
+                                         bool back_link)
+{
+    char page[600];
+    snprintf(page, sizeof(page),
+             "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>%s</title></head>"
+             "<body style=\"font-family:sans-serif;max-width:480px;margin:24px auto;padding:0 16px\">"
+             "<h2>%s</h2><p>%s</p>%s</body></html>",
+             title, title, text, back_link ? "<p><a href=\"/\">Forma geri dön</a></p>" : "");
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, page);
 }
 
 static esp_err_t portal_post_save_handler(httpd_req_t *req)
@@ -317,13 +318,8 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         if (end == net_sel || *end != '\0' || idx >= count || page_gen != gen) {
             mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
             doorbell_led_start(LED_PANEL_RESULT_ERR);
-            httpd_resp_set_type(req, "text/html; charset=utf-8");
-            httpd_resp_sendstr(req,
-                               "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                               "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                               "<body><h3>Ağ listesi değişti veya seçilen ağ uyumsuz.</h3>"
-                               "<p>Listeden ağı yeniden seçin.</p><p><a href=\"/\">Geri dön</a></p></body></html>");
-            return ESP_OK;
+            return portal_send_save_result(req, "409 Conflict", "Ağ listesi değişti",
+                                           "Listeden ağı yeniden seçin.", true);
         }
         memset(new_ssid, 0, sizeof(new_ssid));
         memcpy(new_ssid, nets[idx].ssid, sizeof(nets[idx].ssid));
@@ -333,12 +329,9 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     if (!fields_ok || !doorbell_net_wifi_creds_valid(new_ssid, new_pass)) {
         mbedtls_platform_zeroize(new_pass, sizeof(new_pass));
         doorbell_led_start(LED_PANEL_RESULT_ERR);
-        httpd_resp_set_type(req, "text/html; charset=utf-8");
-        httpd_resp_sendstr(req,
-                           "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\"></head>"
-                           "<body><h3>Hata: Wi-Fi adı 1-32 karakter, şifre ise 8-63 karakter olmalıdır.</h3>"
-                           "<p><a href=\"/\">Geri dön</a></p></body></html>");
-        return ESP_OK;
+        return portal_send_save_result(req, "400 Bad Request", "Geçersiz giriş",
+                                       "Wi-Fi adı 1–32 karakter, şifre ise boş (açık ağ) veya 8–63 karakter olmalıdır.",
+                                       true);
     }
 
     /* Test-Before-Commit: attempt STA connection for up to 15 seconds while keeping SoftAP open */
@@ -397,14 +390,8 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
             panel_unlock();
 
             doorbell_led_start(LED_PANEL_RESULT_ERR);
-            httpd_resp_set_type(req, "text/html; charset=utf-8");
-            return httpd_resp_sendstr(req,
-                                      "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                                      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                                      "<body><h3>Kayıt hatası!</h3>"
-                                      "<p>Wi-Fi bağlantısı kuruldu ancak ayarlar "
-                                      "kalıcı hafızaya (NVS) kaydedilemedi.</p>"
-                                      "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+            return portal_send_save_result(req, "500 Internal Server Error", "Kaydedilemedi",
+                                           "Wi-Fi bağlantısı kuruldu ancak ayarlar panele kaydedilemedi.", true);
         }
 
         mbedtls_platform_zeroize(prev_pass, sizeof(prev_pass));
@@ -412,12 +399,8 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
         panel_unlock();
 
         doorbell_led_start(LED_PANEL_RESULT_OK);
-        httpd_resp_set_type(req, "text/html; charset=utf-8");
-        httpd_resp_sendstr(req,
-                           "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                           "<body><h3>Bağlantı başarılı!</h3>"
-                           "<p>Yeni bina Wi-Fi ayarları kaydedildi. Kurulum ağı kapatılıyor.</p></body></html>");
+        portal_send_save_result(req, "200 OK", "Bağlantı başarılı",
+                                "Yeni bina Wi-Fi ayarları kaydedildi. Kurulum ağı kapatılıyor.", false);
 
         s_portal_close_pending = true;
         return ESP_OK;
@@ -441,14 +424,9 @@ static esp_err_t portal_post_save_handler(httpd_req_t *req)
     panel_unlock();
 
     doorbell_led_start(LED_PANEL_RESULT_ERR);
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    return httpd_resp_sendstr(req,
-                              "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-                              "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-                              "<body><h3>Bağlantı başarısız!</h3>"
-                              "<p>Panel girilen Wi-Fi ağına bağlanamadı veya IP adresi alamadı. "
-                              "Wi-Fi adını ve şifresini kontrol edip tekrar deneyin.</p>"
-                              "<p><a href=\"/\">Forma geri dön</a></p></body></html>");
+    return portal_send_save_result(req, "502 Bad Gateway", "Bağlanamadı",
+                                   "Panel girilen Wi-Fi ağına bağlanamadı veya IP adresi alamadı. "
+                                   "Wi-Fi adını ve şifresini kontrol edip tekrar deneyin.", true);
 }
 
 /* ---- Captive portal: DNS responder + HTTP redirect on the SoftAP only ----
@@ -611,12 +589,18 @@ esp_err_t panel_portal_start(void)
     };
     static const httpd_uri_t scan_uri = {
         .uri = "/scan",
+        .method = HTTP_POST,
+        .handler = portal_post_scan_handler,
+    };
+    static const httpd_uri_t networks_uri = {
+        .uri = "/networks",
         .method = HTTP_GET,
-        .handler = portal_get_scan_handler,
+        .handler = portal_get_networks_handler,
     };
     httpd_register_uri_handler(s_httpd, &root_uri);
     httpd_register_uri_handler(s_httpd, &save_uri);
     httpd_register_uri_handler(s_httpd, &scan_uri);
+    httpd_register_uri_handler(s_httpd, &networks_uri);
     httpd_register_err_handler(s_httpd, HTTPD_404_NOT_FOUND, portal_captive_redirect_handler);
     /* Every connectivity probe is a 404 before the redirect; keep them out of the log */
     esp_log_level_set("httpd_uri", ESP_LOG_ERROR);

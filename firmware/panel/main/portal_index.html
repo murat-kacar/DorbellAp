@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Zil Paneli Wi-Fi Kurulumu</title>
+<style>
+:root{--bg:#f2f3f7;--card:#fff;--fg:#14161b;--mut:#6b7180;--line:#e3e5ea;--acc:#1f6feb;--acc-fg:#fff;--ok:#1a7f37;
+--bad:#cf222e;--sel:#e8f0fe}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#1a1d24;--fg:#eceef3;--mut:#9aa1b0;--line:#2a2f3a;
+--acc:#4c8dff;--sel:#1d2a44;--ok:#3fb950;--bad:#f85149}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:480px;margin:0 auto;padding:16px 16px calc(96px + env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:12px;margin:4px 0 20px}
+.logo{width:44px;height:44px;border-radius:12px;background:var(--acc);display:grid;place-items:center;flex:none}
+.logo svg{width:24px;height:24px;fill:var(--acc-fg)}
+h1{font-size:20px;margin:0}
+h2{font-size:15px;margin:0;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sub{margin:0;color:var(--mut);font-size:14px}
+.pill{margin-left:auto;font-size:13px;color:var(--mut);background:var(--card);border:1px solid var(--line);
+border-radius:999px;padding:4px 10px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pill.warn{color:var(--bad);border-color:var(--bad)}
+.bar{display:flex;align-items:center;justify-content:space-between;margin:0 4px 8px}
+.card{background:var(--card);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+ul{list-style:none;margin:0;padding:0}
+.net,.row{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:10px 14px;border:0;
+background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+li+li .net,.card .row{border-top:1px solid var(--line)}
+.net[aria-checked=true]{background:var(--sel)}
+.name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:12px;color:var(--acc);border:1px solid currentColor;border-radius:6px;padding:0 6px;margin-left:6px}
+.meta{display:flex;align-items:center;gap:6px;color:var(--mut);flex:none}
+.sig{width:20px;height:16px;fill:currentColor}.sig .off{opacity:.25}
+.lock{width:14px;height:14px;fill:currentColor}
+.dot{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);flex:none}
+.net[aria-checked=true] .dot{border:6px solid var(--acc)}
+.row{color:var(--acc)}
+.hint{color:var(--mut);font-size:14px;padding:14px;text-align:center}
+.icon{border:0;background:none;color:var(--acc);font:inherit;font-size:15px;padding:8px;min-height:44px;
+cursor:pointer;display:flex;align-items:center;gap:6px}
+.icon svg{width:18px;height:18px;fill:currentColor}
+.spin svg{animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+form .card{padding:14px;margin-top:16px}
+label{display:block;font-size:14px;color:var(--mut);margin:0 0 6px}
+input{width:100%;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:10px;
+padding:12px;min-height:48px}
+input:focus{outline:2px solid var(--acc);outline-offset:1px}
+.field+.field{margin-top:14px}
+.pw{position:relative}.pw input{padding-right:84px}
+.pw .icon{position:absolute;right:4px;top:2px}
+.err{color:var(--bad);font-size:14px;margin:10px 0 0;min-height:1em}
+.foot{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+background:linear-gradient(transparent,var(--bg) 30%)}
+.primary{display:block;width:100%;max-width:448px;margin:0 auto;min-height:52px;border:0;border-radius:14px;
+background:var(--acc);color:var(--acc-fg);font-family:inherit;font-size:17px;font-weight:600;cursor:pointer}
+.primary:disabled{opacity:.4}
+.state{text-align:center;padding:48px 8px}
+.state h1{margin:16px 0 8px}
+.state p{color:var(--mut);margin:0 0 12px}
+.big{width:72px;height:72px;margin:0 auto;border-radius:50%;display:grid;place-items:center;background:var(--card);
+border:1px solid var(--line)}
+.big svg{width:36px;height:36px;fill:currentColor}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.ring{width:56px;height:56px;margin:8px auto;border-radius:50%;border:5px solid var(--line);
+border-top-color:var(--acc);animation:r .9s linear infinite}
+.led{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;
+font-size:14px;color:var(--fg);text-align:left}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="logo"><svg viewBox="0 0 24 24"><path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6V11a7
+7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1z"/></svg></div>
+<div><h1>Bina Wi-Fi</h1><p class="sub">Zil paneli kurulumu</p></div>
+<span id="ttl" class="pill" hidden></span>
+</header>
+
+<section id="setup" hidden>
+<div class="bar"><h2>Ağ seçin</h2>
+<button id="rescan" type="button" class="icon" aria-label="Ağları yeniden tara"><svg viewBox="0 0 24 24"><path d="M17.65
+6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6a5.9 5.9 0 0 1 4.22 1.78L13 11h7V4z"/></svg><span>Tara</span></button></div>
+<div class="card">
+<ul id="list" role="radiogroup" aria-label="Wi-Fi ağları"></ul>
+<p id="hint" class="hint" aria-live="polite"></p>
+<button id="manual" type="button" class="row">+ Diğer / gizli ağ</button>
+</div>
+
+<form id="form" method="post" action="/save" autocomplete="off" novalidate>
+<div class="card">
+<div class="field" id="ssidBox" hidden><label for="ssid">Ağ adı (SSID)</label>
+<input id="ssid" name="ssid" maxlength="32" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
+<div class="field" id="pwBox"><label for="pw" id="pwLabel">Şifre</label>
+<div class="pw"><input id="pw" name="password" type="password" maxlength="63" autocomplete="off"
+autocapitalize="none" autocorrect="off" spellcheck="false">
+<button type="button" id="eye" class="icon">Göster</button></div></div>
+<p id="err" class="err" role="alert"></p>
+</div>
+<div class="foot"><button id="go" class="primary" type="submit" disabled>Ağ seçin</button></div>
+</form>
+</section>
+
+<section id="busy" class="state" hidden>
+<div class="ring"></div>
+<h1>Bağlanılıyor…</h1>
+<p>Panel <b id="busyName"></b> ağına bağlanmayı deniyor (en fazla 15 sn).</p>
+<p>Bu sırada telefonunuzun kurulum ağı bağlantısı kısa süre kopabilir.</p>
+</section>
+
+<section id="result" class="state" hidden>
+<div class="big" id="resIcon"></div>
+<h1 id="resTitle"></h1>
+<p id="resText"></p>
+<p id="resLed" class="led" hidden>Panel LED'i: <b>2 sn sabit</b> = başarılı,<br><b>1 sn hızlı yanıp sönme</b> =
+başarısız</p>
+<div class="foot" id="resFoot"><button id="again" class="primary" type="button">Tekrar dene</button></div>
+</section>
+
+<noscript>
+<form method="post" action="/save"><input type="hidden" name="net" value="m">
+<div class="card" style="padding:14px">
+<div class="field"><label for="ns">Ağ adı (SSID)</label><input id="ns" name="ssid" maxlength="32"></div>
+<div class="field"><label for="np">Şifre (açık ağda boş)</label><input id="np" name="password" type="password"
+maxlength="63"></div>
+<button class="primary" type="submit" style="margin-top:16px">Kaydet ve Bağlan</button></div>
+</form>
+</noscript>
+</main>
+<script>
+(function(){
+'use strict';
+var $=function(id){return document.getElementById(id);};
+var S={nets:[],gen:0,cur:'',sel:null,manual:false,ttl:-1,busy:false,timer:0,loaded:false};
+var LOCK='<svg class="lock" viewBox="0 0 24 24" aria-label="Şifreli"><path d="M17 9V7A5 5 0 0 0 7 7v2H5v13h14V9zM9 7a3'+
+' 3 0 0 1 6 0v2H9z"/></svg>';
+var OK='<svg viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+var BAD='<svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19'+
+' 17.6 13.4 12z"/></svg>';
+
+function esc(t){return t.replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function bytes(t){return unescape(encodeURIComponent(t)).length;}
+function sig(r){
+  var n=r>=-60?4:r>=-70?3:r>=-80?2:1,s='<svg class="sig" viewBox="0 0 20 16" aria-hidden="true">';
+  for(var i=0;i<4;i++){var h=4+i*4;s+='<rect x="'+(i*5+1)+'" y="'+(16-h)+'" width="3" height="'+h+'" rx="1"'+
+    (i<n?'':' class="off"')+'/>';}
+  return s+'</svg>';
+}
+function show(id){['setup','busy','result'].forEach(function(s){$(s).hidden=s!==id;});}
+function selected(){
+  if(S.manual)return{s:$('ssid').value,l:1,m:true};
+  for(var i=0;i<S.nets.length;i++)if(S.nets[i].s===S.sel)return S.nets[i];
+  return null;
+}
+
+function render(){
+  var h='';
+  S.nets.forEach(function(n,i){
+    var on=!S.manual&&n.s===S.sel;
+    h+='<li><button type="button" class="net" role="radio" aria-checked="'+on+'" data-i="'+i+'"><span class="dot">'+
+      '</span><span class="name">'+esc(n.s)+(n.s===S.cur?'<span class="badge">Kayıtlı</span>':'')+'</span><span'+
+      ' class="meta">'+(n.l?LOCK:'')+sig(n.r)+'</span></button></li>';
+  });
+  $('list').innerHTML=h;
+  $('hint').hidden=S.nets.length>0&&!S.scanning;
+  $('hint').textContent=S.scanning?(S.nets.length?'Liste güncelleniyor…':'Ağlar taranıyor…'):
+    (S.loaded?'Ağ bulunamadı. Yeniden tarayın veya adı elle girin.':'');
+  $('rescan').className='icon'+(S.scanning?' spin':'');
+  $('manual').setAttribute('aria-pressed',S.manual);
+  $('ssidBox').hidden=!S.manual;
+  var n=selected();
+  $('pwBox').hidden=!!(n&&!n.m&&!n.l);
+  $('pwLabel').textContent=S.manual?'Şifre (açık ağda boş bırakın)':'Şifre';
+  $('go').disabled=!n;
+  $('go').textContent=n?'Bağlan':'Ağ seçin';
+}
+
+function paintTtl(){
+  if(S.ttl<0)return;
+  var p=$('ttl');p.hidden=false;
+  if(S.ttl<=0){p.textContent='Kurulum ağı kapandı';p.className='pill warn';return;}
+  p.textContent='Kapanmasına '+Math.floor(S.ttl/60)+':'+('0'+S.ttl%60).slice(-2);
+  p.className='pill'+(S.ttl<=30?' warn':'');
+}
+function tick(){if(!S.busy&&S.ttl>0)S.ttl--;paintTtl();}
+
+function load(){
+  clearTimeout(S.timer);
+  fetch('/networks',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(S.busy)return;
+    S.nets=d.nets;S.gen=d.gen;S.cur=d.current;S.ttl=d.ttl;S.scanning=d.scanning;
+    if(!S.loaded){S.loaded=true;if(S.sel===null&&!S.manual&&S.cur)S.sel=S.cur;}
+    render();paintTtl();
+    if(d.scanning)S.timer=setTimeout(load,1500);
+  }).catch(function(){if(!S.busy)S.timer=setTimeout(load,3000);});
+}
+function rescan(){
+  if(S.busy)return;
+  S.scanning=true;render();
+  fetch('/scan',{method:'POST'}).then(load,load);
+}
+
+function result(ok,title,text,led,retry){
+  S.busy=false;show('result');
+  $('resIcon').innerHTML=ok?OK:BAD;$('resIcon').className='big '+(ok?'ok':'bad');
+  $('resTitle').textContent=title;$('resText').textContent=text;$('resLed').hidden=!led;$('resFoot').hidden=!retry;
+}
+
+function submit(e){
+  e.preventDefault();
+  var n=selected(),pw=$('pw').value,err=$('err');
+  if(!n)return;
+  var ssid=n.m?$('ssid').value:n.s,open=!n.m&&!n.l;
+  if(open)pw='';
+  if(n.m&&(bytes(ssid)<1||bytes(ssid)>32)){err.textContent='Ağ adı 1–32 karakter olmalıdır.';return;}
+  if(!open&&!n.m&&!pw){err.textContent='Bu ağ şifreli; şifreyi girin.';return;}
+  if(pw&&(bytes(pw)<8||bytes(pw)>63)){err.textContent='Şifre 8–63 karakter olmalıdır.';return;}
+  err.textContent='';
+  var idx=-1;for(var i=0;i<S.nets.length;i++)if(!n.m&&S.nets[i].s===n.s)idx=i;
+  var e2=encodeURIComponent;
+  var body='gen='+S.gen+'&net='+(n.m?'m':idx)+'&ssid='+e2(n.m?ssid:'')+'&password='+e2(pw);
+  S.busy=true;clearTimeout(S.timer);$('busyName').textContent=ssid;show('busy');
+  var ctl=window.AbortController?new AbortController():null;
+  var to=setTimeout(function(){if(ctl)ctl.abort();},30000);
+  fetch('/save',{method:'POST',body:body,headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    signal:ctl?ctl.signal:undefined}).then(function(r){
+    clearTimeout(to);
+    if(r.status===200){$('pw').value='';result(true,'Bağlantı başarılı','Ayarlar kaydedildi. Kurulum ağı '+
+      'kapanıyor; bu sayfayı kapatabilirsiniz.',false,false);}
+    else if(r.status===409){S.busy=false;show('setup');err.textContent='Ağ listesi değişti; ağı yeniden seçin.';
+      S.sel=null;load();}
+    else if(r.status===400){S.busy=false;show('setup');err.textContent='Ağ adı veya şifre geçersiz.';}
+    else if(r.status===502){result(false,'Bağlanamadı','Panel ağa bağlanamadı veya IP adresi alamadı. Şifreyi '+
+      'kontrol edip tekrar deneyin.',false,true);}
+    else{result(false,'Kaydedilemedi','Bağlantı kuruldu ancak ayarlar panele kaydedilemedi. Tekrar deneyin.',false,
+      true);}
+  }).catch(function(){
+    clearTimeout(to);
+    result(false,'Bağlantı koptu','Panel kanal değiştirirken telefon kurulum ağından düşmüş olabilir. Sonucu panel '+
+      'LED\'inden kontrol edin. Başarısızsa Doorbell-Setup ağına yeniden bağlanıp tekrar deneyin.',true,true);
+  });
+}
+
+$('list').addEventListener('click',function(e){
+  var b=e.target.closest('.net');if(!b)return;
+  var n=S.nets[+b.getAttribute('data-i')];
+  if(n.s!==S.sel)$('pw').value='';
+  S.sel=n.s;S.manual=false;$('err').textContent='';render();
+  if(n.l)$('pw').focus();
+});
+$('manual').addEventListener('click',function(){S.manual=!S.manual;$('err').textContent='';render();
+  if(S.manual)$('ssid').focus();});
+$('ssid').addEventListener('input',render);
+$('rescan').addEventListener('click',rescan);
+$('eye').addEventListener('click',function(){var p=$('pw'),t=p.type==='password';p.type=t?'text':'password';
+  this.textContent=t?'Gizle':'Göster';});
+$('form').addEventListener('submit',submit);
+$('again').addEventListener('click',function(){show('setup');rescan();});
+
+show('setup');render();rescan();
+setInterval(tick,1000);
+})();
+</script>
+</body>
+</html>

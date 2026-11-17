@@ -246,13 +246,20 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    a different channel, the client may be disconnected from `Doorbell-Setup` during the test and never receive the
    HTTP response. The status LED (2 s solid = committed, 1 s fast blink = rolled back) is therefore the authoritative
    result indicator; the HTML result page is best-effort.
-4. **Network list:** When the portal opens (and on `GET /scan`, not during a credential test) the panel runs one
-   non-blocking active scan that returns to the SoftAP channel between scanned channels (default home-channel dwell),
-   so connected clients stay associated. Hidden SSIDs are skipped, BSSs with the same SSID are merged (strongest RSSI),
-   at most 15 networks are listed by signal strength.
+4. **Network list:** The page (`GET /`, a static mobile-first page embedded with `EMBED_TXTFILES`) loads the list
+   from `GET /networks` as JSON: `scanning`, `gen` (scan generation), `ttl` (seconds until the portal closes),
+   `current` (configured SSID) and `nets` (`s` SSID, `r` RSSI, `l` secured). It never contains a passphrase. SSIDs are
+   JSON-escaped: well-formed UTF-8 is passed through, other bytes become `\u00XX`, and `<`, `>`, `&` are escaped.
+   When the portal opens, and on `POST /scan` (sent on every page load and by the refresh button; not during a
+   credential test; a running scan is not restarted), the panel runs one non-blocking active scan that returns to the
+   SoftAP channel between scanned channels (default home-channel dwell), so connected clients stay associated; the
+   page polls `GET /networks` until `scanning` is false. Hidden SSIDs are skipped, BSSs with the same SSID are merged
+   (strongest RSSI), at most 15 networks are listed by signal strength.
    The form submits `net=<index>&gen=<scan generation>`; the panel takes the SSID bytes from its own cached list and
-   rejects a stale generation or an out-of-range index. `net=m` (or no `net`) uses the typed
-   `ssid` field (hidden networks). All SSIDs are HTML-escaped. No background scanning.
+   rejects a stale generation or an out-of-range index. `net=m` (or no `net`) uses the typed `ssid` field (hidden
+   networks). `POST /save` reports its outcome by HTTP status (`200` saved, `400` invalid input, `409` stale list,
+   `502` test association failed, `500` storage error) with a short HTML body for the no-script fallback form. No
+   background scanning.
 5. **Captive portal:** DNS responder on UDP 53 bound to the SoftAP (every `A` query → SoftAP IP, TTL 10 s; other
    types → empty `NOERROR`) and `302` from unknown paths to the form, so phones open the page by themselves.
 6. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or

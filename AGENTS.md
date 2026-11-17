@@ -165,7 +165,8 @@ Normative companion specifications:
    - **Single-Radio Rule:** While the setup portal is active (until form submission) or while pairing discovery
      is active, background `STA` channel scanning and auto-reconnect timers are paused so the single ESP32 radio does
      not hop channels. Exception: the portal's network list (`docs/protocol.md` §5.3 item 4) runs one non-blocking scan
-     when the portal opens and one per `GET /scan`, returning to the SoftAP channel between scanned channels.
+     when the portal opens and one per `POST /scan` (page load or refresh button, one at a time), returning to the
+     SoftAP channel between scanned channels.
 4. **Apartment Module Wi-Fi Credentials:**
    - Apartment modules ship with a single generic firmware containing no building Wi-Fi credentials; they receive the
      building AP SSID, passphrase, channel hint, panel LAN IPv4, and `Heartbeat interval` from the panel **during
