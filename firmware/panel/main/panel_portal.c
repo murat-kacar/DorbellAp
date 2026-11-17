@@ -126,7 +126,8 @@ static bool extract_form_field(const char *body, const char *key, char *out, siz
  *
  * HTTP contract with that page (docs/protocol.md §5.3 item 4), which no compiler or test checks: the GET /networks JSON
  * fields (scanning, gen, ttl, current, nets[].s/r/l), POST /scan, the POST /save form fields (gen, net = index or "m",
- * ssid, password) and the POST /save status codes (200, 400, 409, 502, 500). Change both files and the spec together. */
+ * ssid, password) and the POST /save status codes (200, 400, 409, 502, 500). Change both files and the spec
+ * together. */
 extern const char portal_index_html_start[] asm("_binary_portal_index_html_start");
 extern const char portal_index_html_end[] asm("_binary_portal_index_html_end");
 
