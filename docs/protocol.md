@@ -259,7 +259,9 @@ The panel runs a single event-driven coordinator (`esp_event`) with five mutuall
    rejects a stale generation or an out-of-range index. `net=m` (or no `net`) uses the typed `ssid` field (hidden
    networks). `POST /save` reports its outcome by HTTP status (`200` saved, `400` invalid input, `409` stale list,
    `502` test association failed, `500` storage error) with a short HTML body for the no-script fallback form. No
-   background scanning.
+   background scanning. This item is the only definition of the contract between the page
+   (`firmware/panel/main/portal_index.html`) and its server (`firmware/panel/main/panel_portal.c`); no compiler or
+   test checks it, so a change to the JSON fields, form fields or status codes must update all three together.
 5. **Captive portal:** DNS responder on UDP 53 bound to the SoftAP (every `A` query → SoftAP IP, TTL 10 s; other
    types → empty `NOERROR`) and `302` from unknown paths to the form, so phones open the page by themselves.
 6. **Input validation:** SSID must be 1–32 bytes; passphrase must be empty (open AP) or 8–63 characters. Over-long or
