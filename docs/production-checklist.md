@@ -15,7 +15,7 @@ Normative references: [AGENTS.md](../AGENTS.md), [docs/protocol.md](protocol.md)
 | 1.2 | Flasher → **1. Profile = Production (release build: -Os)** | Build log shows `Production (-Os)` |
 | 1.3 | Set the same interop values in both role tabs: UDP port, ACK timeout, pairing completion timeout, heartbeat on/off | Flasher does not show "Panel / Apartment Mismatch" |
 | 1.4 | Build **panel** and **apartment** | `[Build] SUCCESS -> flasher/builds/<role>_<ts>_prod.bin`; app partition free space reported ≥ 10 % |
-| 1.5 | Confirm firmware version in `firmware/version.txt` matches the release tag (e.g. `1.1` ↔ `v1.1`) | Heartbeat log prints `fw=1.1` |
+| 1.5 | Confirm firmware version in `firmware/version.txt` matches the release tag (e.g. `1.2` ↔ `v1.2`) | Heartbeat log prints `fw=1.2` |
 | 1.6 | Bench regression on one panel + one module (section 4) before field use | All rows pass |
 | 1.7 | Tag the release commit (`git tag -a vX.Y`) and push the tag | Tag visible on GitHub |
 
